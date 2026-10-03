@@ -190,21 +190,6 @@ impl Guest for WallhavenProvider {
                     default: Some(ConfigValue::One(ScalarValue::Choice("1M".to_string()))),
                 },
                 OptionSpec {
-                    key: "orientation".to_string(),
-                    label: "Orientation".to_string(),
-                    description: Some(
-                        "Preferred photo orientation (landscape, portrait, or any)".to_string(),
-                    ),
-                    ty: ScalarType::Choice(vec![
-                        "landscape".to_string(),
-                        "portrait".to_string(),
-                        "any".to_string(),
-                    ]),
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Choice("landscape".to_string()))),
-                },
-                OptionSpec {
                     key: "api_key".to_string(),
                     label: "API Key".to_string(),
                     description: Some(
@@ -233,10 +218,6 @@ impl Guest for WallhavenProvider {
                 ConfigEntry {
                     key: "sorting".to_string(),
                     value: ConfigValue::One(ScalarValue::Choice("random".to_string())),
-                },
-                ConfigEntry {
-                    key: "orientation".to_string(),
-                    value: ConfigValue::One(ScalarValue::Choice("landscape".to_string())),
                 },
             ],
             allowed_hosts: vec![
@@ -267,16 +248,10 @@ impl Guest for WallhavenProvider {
         let sorting = reader.get_choice("sorting").unwrap_or("random");
         let top_range = reader.get_choice("top_range").unwrap_or("1M");
 
-        let orientation_choice = reader.get_choice("orientation").unwrap_or("landscape");
         let orientation_param = match filter.orientation {
             Some(Orientation::Landscape) => Some("landscape"),
             Some(Orientation::Portrait) => Some("portrait"),
-            Some(Orientation::Square) => None,
-            Some(Orientation::Any) | None => match orientation_choice {
-                "landscape" => Some("landscape"),
-                "portrait" => Some("portrait"),
-                _ => None,
-            },
+            Some(Orientation::Square) | Some(Orientation::Any) | None => None,
         };
 
         let mut api_url = Url::parse("https://wallhaven.cc/api/v1/search")

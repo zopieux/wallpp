@@ -24,14 +24,14 @@ struct BatchItemWrapper {
     item: Option<String>,
 }
 
-// v4 response structure inside item string.
+// Response structure inside item string.
 #[derive(Deserialize)]
-struct SpotlightItemV4 {
-    ad: Option<SpotlightAdV4>,
+struct SpotlightItem {
+    ad: Option<SpotlightAd>,
 }
 
 #[derive(Deserialize)]
-struct SpotlightAdV4 {
+struct SpotlightAd {
     title: Option<String>,
     #[serde(rename = "iconHoverText")]
     icon_hover_text: Option<String>,
@@ -39,42 +39,14 @@ struct SpotlightAdV4 {
     #[serde(rename = "ctaUri")]
     cta_uri: Option<String>,
     #[serde(rename = "landscapeImage")]
-    landscape_image: Option<SpotlightAssetV4>,
+    landscape_image: Option<SpotlightAsset>,
     #[serde(rename = "portraitImage")]
-    portrait_image: Option<SpotlightAssetV4>,
+    portrait_image: Option<SpotlightAsset>,
 }
 
 #[derive(Deserialize)]
-struct SpotlightAssetV4 {
+struct SpotlightAsset {
     asset: Option<String>,
-}
-
-// v3 response structure inside item string.
-#[derive(Deserialize)]
-struct SpotlightItemV3 {
-    ad: Option<SpotlightAdV3>,
-}
-
-#[derive(Deserialize)]
-struct SpotlightAdV3 {
-    title_text: Option<TextPropertyV3>,
-    copyright_text: Option<TextPropertyV3>,
-    image_fullscreen_001_landscape: Option<ImageV3>,
-    image_fullscreen_001_portrait: Option<ImageV3>,
-}
-
-#[derive(Deserialize)]
-struct TextPropertyV3 {
-    tx: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ImageV3 {
-    u: Option<String>,
-    w: Option<String>,
-    h: Option<String>,
-    #[serde(rename = "fileSize")]
-    file_size: Option<String>,
 }
 
 fn parse_dimensions(url: &str) -> Option<(u32, u32)> {
@@ -160,52 +132,13 @@ impl Guest for WindowsProvider {
                     required: false,
                     default: None,
                 },
-                OptionSpec {
-                    key: "orientation".to_string(),
-                    label: "Preferred Orientation".to_string(),
-                    description: Some(
-                        "Preferred wallpaper orientation when not filtered (landscape, portrait, both)"
-                            .to_string(),
-                    ),
-                    ty: ScalarType::Choice(vec![
-                        "landscape".to_string(),
-                        "portrait".to_string(),
-                        "both".to_string(),
-                    ]),
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Choice("landscape".to_string()))),
-                },
-                OptionSpec {
-                    key: "api_version".to_string(),
-                    label: "API Version".to_string(),
-                    description: Some(
-                        "Spotlight API version: v4 (4K, Windows 11) or v3 (1080p, Windows 10)"
-                            .to_string(),
-                    ),
-                    ty: ScalarType::Choice(vec!["v4".to_string(), "v3".to_string()]),
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Choice("v4".to_string()))),
-                },
             ],
-            default_config: vec![
-                ConfigEntry {
-                    key: "locale".to_string(),
-                    value: ConfigValue::One(ScalarValue::Text("en-US".to_string())),
-                },
-                ConfigEntry {
-                    key: "orientation".to_string(),
-                    value: ConfigValue::One(ScalarValue::Choice("landscape".to_string())),
-                },
-                ConfigEntry {
-                    key: "api_version".to_string(),
-                    value: ConfigValue::One(ScalarValue::Choice("v4".to_string())),
-                },
-            ],
+            default_config: vec![ConfigEntry {
+                key: "locale".to_string(),
+                value: ConfigValue::One(ScalarValue::Text("en-US".to_string())),
+            }],
             allowed_hosts: vec![
                 "fd.api.iris.microsoft.com".to_string(),
-                "arc.msn.com".to_string(),
                 "*.api.iris.microsoft.com".to_string(),
                 "*.iris.microsoft.com".to_string(),
                 "*.msn.com".to_string(),
@@ -235,42 +168,17 @@ impl Guest for WindowsProvider {
             "US"
         };
 
-        let pref_orientation = reader.get_choice("orientation").unwrap_or("landscape");
-        let api_version = reader.get_choice("api_version").unwrap_or("v4");
-
-        let want_landscape = match filter.orientation {
-            Some(Orientation::Landscape) => true,
-            Some(Orientation::Portrait) => false,
-            Some(Orientation::Square) => false,
-            Some(Orientation::Any) | None => match pref_orientation {
-                "portrait" => false,
-                "both" | "all" => true,
-                _ => true,
-            },
+        let (want_landscape, want_portrait) = match filter.orientation {
+            Some(Orientation::Landscape) => (true, false),
+            Some(Orientation::Portrait) => (false, true),
+            Some(Orientation::Square) => (false, false),
+            Some(Orientation::Any) | None => (true, true),
         };
 
-        let want_portrait = match filter.orientation {
-            Some(Orientation::Portrait) => true,
-            Some(Orientation::Landscape) => false,
-            Some(Orientation::Square) => false,
-            Some(Orientation::Any) | None => {
-                matches!(pref_orientation, "portrait" | "both" | "all")
-            }
-        };
-
-        let request_url = if api_version == "v3" {
-            format!(
-                "https://arc.msn.com/v3/Delivery/Placement?pid=209567&fmt=json&rafb=0&ua=WindowsShellClient%2F0&cdm=1&disphorzres=9999&dispvertres=9999&lo=80217&pl={}&lc={}&ctry={}&time=2026-12-31T23:59:59Z",
-                locale,
-                locale,
-                country.to_lowercase()
-            )
-        } else {
-            format!(
-                "https://fd.api.iris.microsoft.com/v4/api/selection?&placement=88000820&bcnt=4&country={}&locale={}&fmt=json",
-                country, locale
-            )
-        };
+        let request_url = format!(
+            "https://fd.api.iris.microsoft.com/v4/api/selection?&placement=88000820&bcnt=4&country={}&locale={}&fmt=json",
+            country, locale
+        );
 
         let (body, _) = block_on(async move { http_get(request_url).await })?;
         let resp: BatchResponse =
@@ -286,154 +194,82 @@ impl Guest for WindowsProvider {
                 continue;
             };
 
-            if api_version == "v3" {
-                let Ok(item_v3) = serde_json::from_str::<SpotlightItemV3>(&item_str) else {
-                    continue;
-                };
-                let Some(ad) = item_v3.ad else {
-                    continue;
-                };
+            let Ok(item) = serde_json::from_str::<SpotlightItem>(&item_str) else {
+                continue;
+            };
+            let Some(ad) = item.ad else {
+                continue;
+            };
 
-                let title = ad
-                    .title_text
-                    .and_then(|t| t.tx)
-                    .filter(|s| !s.trim().is_empty());
-                let author = ad
-                    .copyright_text
-                    .and_then(|t| t.tx)
-                    .filter(|s| !s.trim().is_empty());
+            let title = ad.title.filter(|s| !s.trim().is_empty()).or_else(|| {
+                ad.icon_hover_text.as_ref().and_then(|ht| {
+                    ht.lines()
+                        .next()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                })
+            });
 
-                if want_landscape {
-                    if let Some(img) = ad.image_fullscreen_001_landscape {
-                        if let Some(u) = img.u {
-                            let size = img
-                                .file_size
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .unwrap_or(0);
-                            if !u.ends_with("empty.jpg") && size > 736 && seen_ids.insert(u.clone())
-                            {
-                                let w = img.w.and_then(|s| s.parse::<u32>().ok()).or(Some(1920));
-                                let h = img.h.and_then(|s| s.parse::<u32>().ok()).or(Some(1080));
-                                wallpapers.push(Wallpaper {
-                                    id: u,
-                                    title: title.clone(),
-                                    author: author.clone(),
-                                    source_url: None,
-                                    width: w,
-                                    height: h,
-                                });
-                                if limit > 0 && wallpapers.len() >= limit as usize {
-                                    break;
-                                }
-                            }
+            let author = ad.copyright.filter(|s| !s.trim().is_empty()).or_else(|| {
+                ad.icon_hover_text.as_ref().and_then(|ht| {
+                    let mut lines = ht.lines();
+                    let _ = lines.next();
+                    lines
+                        .next()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                })
+            });
+
+            let source_url = ad.cta_uri.as_ref().map(|uri| {
+                if let Some(stripped) = uri.strip_prefix("microsoft-edge:") {
+                    stripped.to_string()
+                } else {
+                    uri.clone()
+                }
+            });
+
+            if want_landscape {
+                if let Some(asset_url) = ad
+                    .landscape_image
+                    .and_then(|img| img.asset)
+                    .filter(|u| u.starts_with("https://") && !u.ends_with("empty.jpg"))
+                {
+                    if seen_ids.insert(asset_url.clone()) {
+                        let (w, h) = parse_dimensions(&asset_url).unwrap_or((3840, 2160));
+                        wallpapers.push(Wallpaper {
+                            id: asset_url,
+                            title: title.clone(),
+                            author: author.clone(),
+                            source_url: source_url.clone(),
+                            width: Some(w),
+                            height: Some(h),
+                        });
+                        if limit > 0 && wallpapers.len() >= limit as usize {
+                            break;
                         }
                     }
                 }
+            }
 
-                if want_portrait {
-                    if let Some(img) = ad.image_fullscreen_001_portrait {
-                        if let Some(u) = img.u {
-                            let size = img
-                                .file_size
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .unwrap_or(0);
-                            if !u.ends_with("empty.jpg") && size > 736 && seen_ids.insert(u.clone())
-                            {
-                                let w = img.w.and_then(|s| s.parse::<u32>().ok()).or(Some(1080));
-                                let h = img.h.and_then(|s| s.parse::<u32>().ok()).or(Some(1920));
-                                wallpapers.push(Wallpaper {
-                                    id: u,
-                                    title: title.clone(),
-                                    author: author.clone(),
-                                    source_url: None,
-                                    width: w,
-                                    height: h,
-                                });
-                                if limit > 0 && wallpapers.len() >= limit as usize {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                let Ok(item_v4) = serde_json::from_str::<SpotlightItemV4>(&item_str) else {
-                    continue;
-                };
-                let Some(ad) = item_v4.ad else {
-                    continue;
-                };
-
-                let title = ad.title.filter(|s| !s.trim().is_empty()).or_else(|| {
-                    ad.icon_hover_text.as_ref().and_then(|ht| {
-                        ht.lines()
-                            .next()
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                    })
-                });
-
-                let author = ad.copyright.filter(|s| !s.trim().is_empty()).or_else(|| {
-                    ad.icon_hover_text.as_ref().and_then(|ht| {
-                        let mut lines = ht.lines();
-                        let _ = lines.next();
-                        lines
-                            .next()
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                    })
-                });
-
-                let source_url = ad.cta_uri.as_ref().map(|uri| {
-                    if let Some(stripped) = uri.strip_prefix("microsoft-edge:") {
-                        stripped.to_string()
-                    } else {
-                        uri.clone()
-                    }
-                });
-
-                if want_landscape {
-                    if let Some(asset_url) = ad
-                        .landscape_image
-                        .and_then(|img| img.asset)
-                        .filter(|u| u.starts_with("https://") && !u.ends_with("empty.jpg"))
-                    {
-                        if seen_ids.insert(asset_url.clone()) {
-                            let (w, h) = parse_dimensions(&asset_url).unwrap_or((3840, 2160));
-                            wallpapers.push(Wallpaper {
-                                id: asset_url,
-                                title: title.clone(),
-                                author: author.clone(),
-                                source_url: source_url.clone(),
-                                width: Some(w),
-                                height: Some(h),
-                            });
-                            if limit > 0 && wallpapers.len() >= limit as usize {
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if want_portrait {
-                    if let Some(asset_url) = ad
-                        .portrait_image
-                        .and_then(|img| img.asset)
-                        .filter(|u| u.starts_with("https://") && !u.ends_with("empty.jpg"))
-                    {
-                        if seen_ids.insert(asset_url.clone()) {
-                            let (w, h) = parse_dimensions(&asset_url).unwrap_or((1080, 1920));
-                            wallpapers.push(Wallpaper {
-                                id: asset_url,
-                                title: title.clone(),
-                                author: author.clone(),
-                                source_url: source_url.clone(),
-                                width: Some(w),
-                                height: Some(h),
-                            });
-                            if limit > 0 && wallpapers.len() >= limit as usize {
-                                break;
-                            }
+            if want_portrait {
+                if let Some(asset_url) = ad
+                    .portrait_image
+                    .and_then(|img| img.asset)
+                    .filter(|u| u.starts_with("https://") && !u.ends_with("empty.jpg"))
+                {
+                    if seen_ids.insert(asset_url.clone()) {
+                        let (w, h) = parse_dimensions(&asset_url).unwrap_or((1080, 1920));
+                        wallpapers.push(Wallpaper {
+                            id: asset_url,
+                            title: title.clone(),
+                            author: author.clone(),
+                            source_url: source_url.clone(),
+                            width: Some(w),
+                            height: Some(h),
+                        });
+                        if limit > 0 && wallpapers.len() >= limit as usize {
+                            break;
                         }
                     }
                 }

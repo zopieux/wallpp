@@ -132,25 +132,6 @@ impl Guest for UnsplashProvider {
                     ))),
                 },
                 OptionSpec {
-                    key: "orientation".to_string(),
-                    label: "Orientation".to_string(),
-                    description: Some(
-                        "Preferred photo orientation (landscape, portrait, squarish, or any)"
-                            .to_string(),
-                    ),
-                    ty: ScalarType::Choice(vec![
-                        "landscape".to_string(),
-                        "portrait".to_string(),
-                        "squarish".to_string(),
-                        "any".to_string(),
-                    ]),
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Choice(
-                        "landscape".to_string(),
-                    ))),
-                },
-                OptionSpec {
                     key: "query".to_string(),
                     label: "Search Query".to_string(),
                     description: Some(
@@ -174,16 +155,10 @@ impl Guest for UnsplashProvider {
                     default: None,
                 },
             ],
-            default_config: vec![
-                ConfigEntry {
-                    key: "api_key".to_string(),
-                    value: ConfigValue::One(ScalarValue::Text(DEFAULT_CLIENT_ID.to_string())),
-                },
-                ConfigEntry {
-                    key: "orientation".to_string(),
-                    value: ConfigValue::One(ScalarValue::Choice("landscape".to_string())),
-                },
-            ],
+            default_config: vec![ConfigEntry {
+                key: "api_key".to_string(),
+                value: ConfigValue::One(ScalarValue::Text(DEFAULT_CLIENT_ID.to_string())),
+            }],
             allowed_hosts: vec![
                 "api.unsplash.com".to_string(),
                 "images.unsplash.com".to_string(),
@@ -209,17 +184,11 @@ impl Guest for UnsplashProvider {
             ));
         }
 
-        let orientation_choice = reader.get_choice("orientation").unwrap_or("landscape");
         let orientation_param = match filter.orientation {
             Some(Orientation::Landscape) => Some("landscape"),
             Some(Orientation::Portrait) => Some("portrait"),
             Some(Orientation::Square) => Some("squarish"),
-            Some(Orientation::Any) | None => match orientation_choice {
-                "landscape" => Some("landscape"),
-                "portrait" => Some("portrait"),
-                "squarish" => Some("squarish"),
-                _ => None,
-            },
+            Some(Orientation::Any) | None => None,
         };
 
         let count = if limit > 0 { limit.min(30) } else { 30 };
