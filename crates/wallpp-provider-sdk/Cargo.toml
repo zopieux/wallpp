@@ -1,0 +1,16 @@
+[package]
+name = "wallpp-provider-sdk"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wit-bindgen = "0.46"
+wstd = { version = "0.5", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[features]
+default = ["wstd", "serde", "serde_json"]
+wstd = ["dep:wstd"]
+serde = ["dep:serde"]
+serde_json = ["dep:serde_json"]

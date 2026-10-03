@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/*",
+    "providers/*",
+]
+default-members = ["crates/wallpp"]
+resolver = "2"

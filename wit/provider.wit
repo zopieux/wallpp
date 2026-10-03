@@ -1,0 +1,109 @@
+package wallpp:provider@0.1.0;
+
+interface types {
+  // ---- Config schema (declared by the provider) ----
+  record int-bounds {
+    min: option<s64>,
+    max: option<s64>,
+  }
+
+  variant scalar-type {
+    text,                    // free-form string
+    secret,                  // string, redacted in logs/UI by host
+    integer(int-bounds),
+    boolean,
+    choice(list<string>),    // enum: allowed variant values
+  }
+
+  record option-spec {
+    key: string,             // e.g. "subreddits"
+    label: string,
+    description: option<string>,
+    ty: scalar-type,
+    multiple: bool,          // true => list of scalar-type
+    required: bool,
+    default: option<config-value>,
+  }
+
+  // ---- Config values (passed by the host) ----
+  variant scalar-value {
+    text(string),
+    integer(s64),
+    boolean(bool),
+    choice(string),
+  }
+
+  variant config-value {
+    one(scalar-value),
+    many(list<scalar-value>),
+  }
+
+  record config-entry {
+    key: string,
+    value: config-value,
+  }
+
+  type config = list<config-entry>;
+
+  // ---- Filtering capabilities ----
+  enum orientation {
+    landscape,
+    portrait,
+    square,
+    any,
+  }
+
+  record filter-criteria {
+    min-width: option<u32>,
+    min-height: option<u32>,
+    orientation: option<orientation>,
+  }
+
+  // ---- Data records ----
+  record provider-info {
+    name: string,                  // e.g. "reddit"
+    version: string,
+    options: list<option-spec>,
+    allowed-hosts: list<string>,   // e.g. ["*.reddit.com", "i.redd.it", "preview.redd.it"] or ["*"]
+  }
+
+  record wallpaper {
+    id: string,                    // opaque, stable cache key
+    title: option<string>,
+    author: option<string>,
+    source-url: option<string>,    // human link (e.g. reddit permalink)
+    width: option<u32>,
+    height: option<u32>,
+  }
+
+  record page {
+    items: list<wallpaper>,
+    next-cursor: option<string>,
+  }
+
+  record image {
+    content-type: string,
+    data: list<u8>,
+  }
+
+  variant provider-error {
+    invalid-config(string),
+    auth(string),
+    rate-limited(option<u32>),     // retry-after seconds
+    not-found,
+    network(string),
+    other(string),
+  }
+}
+
+interface provider {
+  use types.{config, provider-info, filter-criteria, page, image, provider-error};
+
+  info: func() -> provider-info;
+  %list: func(cfg: config, limit: u32, cursor: option<string>, filter: filter-criteria) -> result<page, provider-error>;
+  download: func(cfg: config, id: string) -> result<image, provider-error>;
+}
+
+world wallpaper-provider {
+  export provider;
+}
