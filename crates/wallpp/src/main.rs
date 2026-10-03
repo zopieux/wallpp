@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 mod cache;
 mod config;
+mod monitor;
 mod prefetch;
 mod provider;
 mod state;
@@ -123,8 +124,11 @@ async fn main() -> Result<()> {
             }
         }
         Some(Commands::List { source, limit }) => {
-            let sources =
-                get_active_sources(engine.app_cfg, source.as_deref(), &engine.provider_mgr.providers);
+            let sources = get_active_sources(
+                engine.app_cfg,
+                source.as_deref(),
+                &engine.provider_mgr.providers,
+            );
 
             if sources.is_empty() {
                 eprintln!("No matching sources found.");
@@ -142,11 +146,8 @@ async fn main() -> Result<()> {
                     &src.provider.info.options,
                     &src.provider.info.default_config,
                 );
-                let filter = wallpp::provider::types::FilterCriteria {
-                    min_width: None,
-                    min_height: None,
-                    orientation: None,
-                };
+                let filter =
+                    monitor::compute_filter_criteria(engine.app_cfg.manager.min_display_percentage);
 
                 match engine
                     .provider_mgr
@@ -251,7 +252,9 @@ impl<'a> WallpaperEngine<'a> {
         is_new: bool,
     ) -> Result<()> {
         println!("[Applying] Setting desktop wallpaper...");
-        wallpaper::set_wallpaper(&meta.cache_path).context("Failed to set desktop wallpaper")?;
+        let method = wallpaper::set_wallpaper(&meta.cache_path)
+            .context("Failed to set desktop wallpaper")?;
+        println!("Method:      {}", method);
 
         if is_new {
             self.state
@@ -260,7 +263,7 @@ impl<'a> WallpaperEngine<'a> {
             self.state.last_changed_at = Some(current_utc_timestamp());
         }
         self.state.save()?;
-        println!("[Success] Wallpaper set successfully!");
+        println!("[Success] Wallpaper set successfully via {}!", method);
 
         if is_new {
             self.post_apply_maintenance().await;
@@ -290,7 +293,11 @@ impl<'a> WallpaperEngine<'a> {
     /// 1. History forward-step (if navigating history).
     /// 2. Prefetch queue pop.
     /// 3. Live provider query & download.
-    async fn transition_next(&mut self, source_filter: Option<&str>, is_preview: bool) -> Result<()> {
+    async fn transition_next(
+        &mut self,
+        source_filter: Option<&str>,
+        is_preview: bool,
+    ) -> Result<()> {
         // 1. History forward step.
         if !is_preview && source_filter.is_none() && self.state.current_history_index > 0 {
             if let Some(meta) = self.state.step_next().cloned() {
@@ -360,9 +367,11 @@ impl<'a> WallpaperEngine<'a> {
 
     /// Query sources, select one based on manager strategy (Random or RoundRobin),.
     /// download the image if not cached, and construct WallpaperMetadata.
-    async fn fetch_live_wallpaper(&mut self, source_filter: Option<&str>) -> Result<WallpaperMetadata> {
-        let sources =
-            get_active_sources(self.app_cfg, source_filter, &self.provider_mgr.providers);
+    async fn fetch_live_wallpaper(
+        &mut self,
+        source_filter: Option<&str>,
+    ) -> Result<WallpaperMetadata> {
+        let sources = get_active_sources(self.app_cfg, source_filter, &self.provider_mgr.providers);
         if sources.is_empty() {
             anyhow::bail!("No matching sources found.");
         }
@@ -400,11 +409,7 @@ impl<'a> WallpaperEngine<'a> {
             &src.provider.info.options,
             &src.provider.info.default_config,
         );
-        let filter = wallpp::provider::types::FilterCriteria {
-            min_width: None,
-            min_height: None,
-            orientation: None,
-        };
+        let filter = monitor::compute_filter_criteria(self.app_cfg.manager.min_display_percentage);
 
         let page = self
             .provider_mgr
@@ -429,7 +434,9 @@ impl<'a> WallpaperEngine<'a> {
                     .provider_mgr
                     .query_download(&src.provider.name, wit_cfg, id)
                     .await?;
-                let p = self.cache_mgr.store_image(id, &img.content_type, &img.data)?;
+                let p = self
+                    .cache_mgr
+                    .store_image(id, &img.content_type, &img.data)?;
                 println!("[Downloaded] Stored {} bytes at {:?}", img.data.len(), p);
                 p
             }
@@ -538,13 +545,14 @@ impl<'a> WallpaperEngine<'a> {
 async fn wait_for_shutdown() {
     #[cfg(unix)]
     {
-        let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(s) => s,
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
-                return;
-            }
-        };
+        let mut sigterm =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(_) => {
+                    let _ = tokio::signal::ctrl_c().await;
+                    return;
+                }
+            };
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {},
             _ = sigterm.recv() => {},

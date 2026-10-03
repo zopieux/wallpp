@@ -48,7 +48,8 @@ pub async fn refill_prefetch_queue(
         crate::config::SourceStrategy::RoundRobin => {
             if let Some(last) = state.last_source() {
                 if let Some(pos) = sources.iter().position(|(name, prov, _)| {
-                    name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(last))
+                    name.as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(last))
                         || prov.eq_ignore_ascii_case(last)
                 }) {
                     (pos + 1) % sources.len()
@@ -82,11 +83,7 @@ pub async fn refill_prefetch_queue(
             discovered.info.default_config.clone()
         };
 
-        let filter = crate::wallpp::provider::types::FilterCriteria {
-            min_width: None,
-            min_height: None,
-            orientation: None,
-        };
+        let filter = crate::monitor::compute_filter_criteria(config.manager.min_display_percentage);
 
         let page = match provider_mgr
             .query_list(provider_name, wit_cfg.clone(), 10, None, filter)

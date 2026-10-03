@@ -128,14 +128,14 @@ pub fn detect_desktop() -> Desktop {
 }
 
 /// Attempts to set wallpaper on Wayland/wlroots compositors.
-fn set_wlroots(file_path: &Path) -> bool {
+fn set_wlroots(file_path: &Path) -> Option<&'static str> {
     let path_str = file_path.to_string_lossy();
 
     if is_process_running("wpaperd") && run_cmd("wpaperctl", &["set", &path_str]) {
-        return true;
+        return Some("wpaperctl");
     }
     if is_process_running("awww-daemon") && run_cmd("awww", &["img", &path_str]) {
-        return true;
+        return Some("awww");
     }
     if is_command_available("swaybg") {
         // Spawn new swaybg and kill existing ones to avoid flicker.
@@ -163,15 +163,16 @@ fn set_wlroots(file_path: &Path) -> bool {
                     let _ = Command::new("kill").arg(pid).status();
                 }
             }
-            return true;
+            return Some("swaybg");
         }
     }
 
-    false
+    None
 }
 
 /// Sets the desktop wallpaper for the detected desktop environment or window manager.
-pub fn set_wallpaper(image_path: &Path) -> Result<()> {
+/// Returns the name of the method/tool that was successfully used.
+pub fn set_wallpaper(image_path: &Path) -> Result<String> {
     let abs_path = fs::canonicalize(image_path)
         .with_context(|| format!("Invalid wallpaper image path: {:?}", image_path))?;
     let path_str = abs_path.to_string_lossy();
@@ -210,7 +211,7 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
                     ],
                 );
                 if s1 || s2 {
-                    return Ok(());
+                    return Ok("gsettings (gnome)".to_string());
                 }
             }
         }
@@ -235,7 +236,7 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
                     ],
                 );
                 if s {
-                    return Ok(());
+                    return Ok("gsettings (cinnamon)".to_string());
                 }
             }
         }
@@ -255,7 +256,7 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
                     ],
                 );
                 if s {
-                    return Ok(());
+                    return Ok("gsettings (mate)".to_string());
                 }
             }
         }
@@ -280,7 +281,7 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
                     ],
                 );
                 if s {
-                    return Ok(());
+                    return Ok("gsettings (deepin)".to_string());
                 }
             }
         }
@@ -311,7 +312,7 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
                     ],
                 );
                 if ok {
-                    return Ok(());
+                    return Ok("plasma-dbus".to_string());
                 }
             }
         }
@@ -333,24 +334,24 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
                         }
                     }
                     if found {
-                        return Ok(());
+                        return Ok("xfconf-query".to_string());
                     }
                 }
             }
         }
         Desktop::Sway => {
-            if set_wlroots(&abs_path) {
-                return Ok(());
+            if let Some(m) = set_wlroots(&abs_path) {
+                return Ok(m.to_string());
             }
             if is_command_available("swaymsg")
                 && run_cmd("swaymsg", &["output", "*", "bg", &path_str, "fill"])
             {
-                return Ok(());
+                return Ok("swaymsg".to_string());
             }
         }
         Desktop::Hyprland => {
-            if set_wlroots(&abs_path) {
-                return Ok(());
+            if let Some(m) = set_wlroots(&abs_path) {
+                return Ok(m.to_string());
             }
             if is_process_running("hyprpaper") && is_command_available("hyprctl") {
                 let monitors = Command::new("hyprctl").args(["monitors", "all"]).output();
@@ -368,7 +369,7 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
                         }
                     }
                     if set_any {
-                        return Ok(());
+                        return Ok("hyprpaper".to_string());
                     }
                 }
             }
@@ -377,14 +378,14 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
             if is_command_available("pcmanfm-qt")
                 && run_cmd("pcmanfm-qt", &["--set-wallpaper", &path_str])
             {
-                return Ok(());
+                return Ok("pcmanfm-qt".to_string());
             }
         }
         Desktop::Lxde => {
             if is_command_available("pcmanfm")
                 && run_cmd("pcmanfm", &["--set-wallpaper", &path_str])
             {
-                return Ok(());
+                return Ok("pcmanfm".to_string());
             }
         }
         Desktop::Cosmic => {
@@ -409,7 +410,7 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
                         }
                     }
                     let _ = fs::write(&cosmic_path, new_lines.join("\n"));
-                    return Ok(());
+                    return Ok("cosmic-config".to_string());
                 }
             }
         }
@@ -421,34 +422,34 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
             if is_command_available("awesome-client")
                 && run_cmd_with_stdin("awesome-client", &[], &lua_code)
             {
-                return Ok(());
+                return Ok("awesome-client".to_string());
             }
         }
         Desktop::Fluxbox => {
             if is_command_available("fbsetbg") && run_cmd("fbsetbg", &[&path_str]) {
-                return Ok(());
+                return Ok("fbsetbg".to_string());
             }
         }
         Desktop::Unknown => {}
     }
 
     // Wayland compositor fallback.
-    if set_wlroots(&abs_path) {
-        return Ok(());
+    if let Some(m) = set_wlroots(&abs_path) {
+        return Ok(m.to_string());
     }
 
     // Generic X11 fallbacks (feh, nitrogen).
     if is_command_available("feh") && run_cmd("feh", &["--bg-fill", &path_str]) {
-        return Ok(());
+        return Ok("feh".to_string());
     }
     if is_command_available("nitrogen")
         && run_cmd("nitrogen", &["--set-zoom-fill", "--save", &path_str])
     {
-        return Ok(());
+        return Ok("nitrogen".to_string());
     }
 
     bail!(
-        "Failed to set wallpaper: no supported desktop environment tool (gsettings, dbus-send/Plasma, xfconf, swaybg/wpaperctl, feh, nitrogen) found in PATH for desktop {:?}",
+        "Failed to set wallpaper: no supported desktop environment tool found in PATH for desktop {:?}",
         de
     )
 }
