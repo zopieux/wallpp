@@ -21,6 +21,7 @@
         "reddit"
         "windows"
         "unsplash"
+        "wallhaven"
       ];
     in
     {

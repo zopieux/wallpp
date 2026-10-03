@@ -79,6 +79,15 @@ provider = "unsplash"
 orientation = "landscape"
 query = "nature wallpapers"
 # api_key = "..." # Optional override (defaults to built-in client ID)
+
+# Wallhaven provider instance
+[[source]]
+name = "wallhaven-random"
+provider = "wallhaven"
+sorting = "random"
+orientation = "landscape"
+allow_sketchy = false
+allow_nsfw = false
 ```
 
 To run against a specific source:
