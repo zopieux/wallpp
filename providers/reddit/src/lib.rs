@@ -112,6 +112,7 @@ impl Guest for RedditProvider {
     fn info() -> ProviderInfo {
         ProviderInfo {
             name: "reddit".to_string(),
+            label: "Reddit".to_string(),
             version: "0.1.0".to_string(),
             options: vec![
                 OptionSpec {

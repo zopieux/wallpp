@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
                 println!("No providers found. Run 'wallpp search-paths' or set WALLPP_PROVIDERS_DIR.");
             } else {
                 for (name, p) in &provider_mgr.providers {
-                    println!("Provider: {} (v{})", name, p.info.version);
+                    println!("Provider: {} [{}] (v{})", p.info.label, name, p.info.version);
                     println!("  File: {:?}", p.path);
                     println!("  Allowed hosts: {:?}", p.info.allowed_hosts);
                     println!("  Options:");
@@ -210,22 +210,28 @@ fn get_active_sources<'a>(
 
     if let Some(filter_name) = source_filter {
         for src in &app_cfg.source {
-            if src.name.as_deref() == Some(filter_name) || src.provider == filter_name {
+            if src.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(filter_name))
+                || src.provider.eq_ignore_ascii_case(filter_name)
+            {
                 if let Some(prov) = discovered.get(&src.provider) {
                     return vec![SourceWithInfo {
-                        name: src.name.clone().unwrap_or_else(|| src.provider.clone()),
+                        name: src.name.clone().unwrap_or_else(|| prov.info.label.clone()),
                         provider: prov,
                         options: &src.options,
                     }];
                 }
             }
         }
-        if let Some(prov) = discovered.get(filter_name) {
-            return vec![SourceWithInfo {
-                name: filter_name.to_string(),
-                provider: prov,
-                options: &EMPTY_MAP,
-            }];
+        for (name, prov) in discovered {
+            if name.eq_ignore_ascii_case(filter_name)
+                || prov.info.label.eq_ignore_ascii_case(filter_name)
+            {
+                return vec![SourceWithInfo {
+                    name: prov.info.label.clone(),
+                    provider: prov,
+                    options: &EMPTY_MAP,
+                }];
+            }
         }
         return Vec::new();
     }
@@ -235,7 +241,7 @@ fn get_active_sources<'a>(
         for src in &app_cfg.source {
             if let Some(prov) = discovered.get(&src.provider) {
                 list.push(SourceWithInfo {
-                    name: src.name.clone().unwrap_or_else(|| src.provider.clone()),
+                    name: src.name.clone().unwrap_or_else(|| prov.info.label.clone()),
                     provider: prov,
                     options: &src.options,
                 });
@@ -255,7 +261,7 @@ fn get_active_sources<'a>(
     for name in names {
         let prov = &discovered[name];
         list.push(SourceWithInfo {
-            name: name.clone(),
+            name: prov.info.label.clone(),
             provider: prov,
             options: &EMPTY_MAP,
         });
