@@ -20,6 +20,7 @@
       providerNames = [
         "reddit"
         "windows"
+        "unsplash"
       ];
     in
     {
@@ -86,7 +87,8 @@
             nativeBuildInputs = [ pkgs.makeWrapper ];
             postBuild = ''
               wrapProgram $out/bin/wallpp \
-                --prefix XDG_DATA_DIRS : "$out/share"
+                --prefix XDG_DATA_DIRS : "$out/share" \
+                --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.procps ]}"
             '';
             meta.mainProgram = "wallpp";
           };
@@ -120,6 +122,7 @@
             buildInputs = with pkgs; [
               rustToolchain
               pkg-config
+              procps
               jq
             ];
             shellHook = ''

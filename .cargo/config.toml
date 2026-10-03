@@ -1,0 +1,2 @@
+[alias]
+build-providers = "build --workspace --exclude wallpp --target wasm32-wasip2"

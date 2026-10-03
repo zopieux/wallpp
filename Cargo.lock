@@ -2106,6 +2106,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wallpp-provider-unsplash"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "url",
+ "wallpp-provider-sdk",
+ "wstd",
+]
+
+[[package]]
 name = "wallpp-provider-windows"
 version = "0.1.0"
 dependencies = [

@@ -17,14 +17,17 @@ This shell provides `rustc`, `cargo` (with the `wasm32-wasip2` target installed)
 Because providers compile as cdylib components for `wasm32-wasip2` while the manager binary compiles natively for your host machine, you must build the provider explicitly:
 
 ```bash
-# Build the reddit provider (debug)
-cargo build -p wallpp-provider-reddit --target wasm32-wasip2
+# Build all providers at once
+cargo build-providers
 
-# Or build in release mode
-cargo build -p wallpp-provider-reddit --target wasm32-wasip2 --release
+# Or manually:
+cargo build --workspace --exclude wallpp --target wasm32-wasip2
+
+# Or build in release mode:
+cargo build-providers --release
 ```
 
-The generated `.wasm` file lands in `$CARGO_TARGET_DIR/wasm32-wasip2/{debug,release}/` where `wallpp` will automatically discover it.
+The generated `.wasm` files land in `$CARGO_TARGET_DIR/wasm32-wasip2/{debug,release}/` where `wallpp` will automatically discover them.
 
 ### Run the manager CLI
 
@@ -38,7 +41,10 @@ cargo run -p wallpp -- providers
 # Query and list wallpapers from configured sources
 cargo run -p wallpp -- list
 
-# Pick next wallpaper, download it into cache, and print details
+# Preview next wallpaper (downloads to cache and prints details without setting)
+cargo run -p wallpp -- preview
+
+# Pick next wallpaper, download it, and apply it to the desktop (default)
 cargo run -p wallpp -- next
 ```
 
@@ -46,12 +52,12 @@ cargo run -p wallpp -- next
 
 `wallpp` reads configuration from `$XDG_CONFIG_HOME/wallpp/config.toml` or the path pointed to by `$WALLPP_CONFIG`.
 
-If no configuration file exists, `wallpp` uses a default Reddit source (wallpapers subreddit, hot sort).
+If no configuration file exists, `wallpp` automatically treats all discovered providers (`Reddit`, `Windows Spotlight`, etc.) as available sources with their default options.
 
 ### Example `config.toml`
 
 ```toml
-# Reddit provider instance 1
+# Reddit provider instance
 [[source]]
 name = "nature"
 provider = "reddit"
@@ -59,19 +65,28 @@ subreddits = ["EarthPorn", "wallpapers"]
 sort = "top"
 time = "week"
 
-# Reddit provider instance 2
+# Windows Spotlight provider instance
 [[source]]
-name = "space"
-provider = "reddit"
-subreddits = ["spaceporn"]
-sort = "hot"
+name = "spotlight-4k"
+provider = "windows"
+locale = "en-US"
+orientation = "landscape"
+
+# Unsplash provider instance
+[[source]]
+name = "unsplash-nature"
+provider = "unsplash"
+orientation = "landscape"
+query = "nature wallpapers"
+# api_key = "..." # Optional override (defaults to built-in client ID)
 ```
 
 To run against a specific source:
 
 ```bash
 cargo run -p wallpp -- list --source nature
-cargo run -p wallpp -- next --source space
+cargo run -p wallpp -- preview --source spotlight-4k
+cargo run -p wallpp -- next --source spotlight-4k
 ```
 
 ## Create a new provider
