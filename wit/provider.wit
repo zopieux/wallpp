@@ -64,6 +64,7 @@ interface types {
     name: string,                  // e.g. "reddit"
     version: string,
     options: list<option-spec>,
+    default-config: config,
     allowed-hosts: list<string>,   // e.g. ["*.reddit.com", "i.redd.it", "preview.redd.it"] or ["*"]
   }
 

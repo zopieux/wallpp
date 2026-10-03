@@ -10,10 +10,17 @@
   };
 
   outputs =
-    { self, nixpkgs, rust-overlay }:
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+    }:
     let
       forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
-      providerNames = [ "reddit" ];
+      providerNames = [
+        "reddit"
+        "windows"
+      ];
     in
     {
       packages = forAllSystems (
