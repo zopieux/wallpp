@@ -26,9 +26,7 @@ struct ReddtasticChild {
 }
 
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct PostData {
-    id: String,
     title: String,
     author: Option<String>,
     permalink: Option<String>,
@@ -225,7 +223,10 @@ impl Guest for RedditProvider {
             .and_then(|base| base.join(first_sub).ok())
             .map(|u| u.to_string());
 
-        let (bytes, _) = block_on(async move { http_get(api_url.as_str().to_string(), referer.as_deref()).await })?;
+        let (bytes, _) =
+            block_on(
+                async move { http_get(api_url.as_str().to_string(), referer.as_deref()).await },
+            )?;
 
         let res: ReddtasticResponse = serde_json::from_slice(&bytes)
             .map_err(|e| ProviderError::Other(format!("Failed to parse JSON: {}", e)))?;
@@ -236,7 +237,7 @@ impl Guest for RedditProvider {
         for child in data.children {
             let post = child.data;
 
-            // Skip stickied announcements or pinned mod posts
+            // Skip stickied announcements or pinned mod posts.
             if post.stickied.unwrap_or(false) || post.pinned.unwrap_or(false) {
                 continue;
             }
@@ -251,12 +252,12 @@ impl Guest for RedditProvider {
                 None => continue,
             };
 
-            // Skip external previews (thumbnails for text posts / news articles)
+            // Skip external previews (thumbnails for text posts / news articles).
             if preview_img.url.contains("external-preview.redd.it") {
                 continue;
             }
 
-            // Determine image download URL: must be a real image link
+            // Determine image download URL: must be a real image link.
             let image_url = match post.url {
                 Some(ref u)
                     if u.contains("i.redd.it")
@@ -271,7 +272,7 @@ impl Guest for RedditProvider {
                 _ if preview_img.url.contains("preview.redd.it") => {
                     preview_img.url.replace("&amp;", "&")
                 }
-                _ => continue, // Not an image post
+                _ => continue, // Not an image post.
             };
 
             let width = preview_img.width;

@@ -14,3 +14,5 @@ toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 sha2 = "0.10"
 hex = "0.4"
+config = { version = "0.15", default-features = false, features = ["toml"] }
+bincode = "1.3"

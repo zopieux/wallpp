@@ -138,7 +138,7 @@ fn set_wlroots(file_path: &Path) -> bool {
         return true;
     }
     if is_command_available("swaybg") {
-        // Spawn new swaybg and kill existing ones to avoid flicker
+        // Spawn new swaybg and kill existing ones to avoid flicker.
         let old_pids = Command::new("pidof")
             .arg("swaybg")
             .output()
@@ -152,7 +152,7 @@ fn set_wlroots(file_path: &Path) -> bool {
             .stderr(Stdio::null())
             .spawn()
         {
-            // Detach swaybg child process so it keeps running
+            // Detach swaybg child process so it keeps running.
             std::thread::spawn(move || {
                 let _ = child.wait();
             });
@@ -182,9 +182,33 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
     match de {
         Desktop::Gnome => {
             if is_command_available("gsettings") {
-                let s1 = run_cmd("gsettings", &["set", "org.gnome.desktop.background", "picture-uri", &file_uri]);
-                let s2 = run_cmd("gsettings", &["set", "org.gnome.desktop.background", "picture-uri-dark", &file_uri]);
-                let _ = run_cmd("gsettings", &["set", "org.gnome.desktop.background", "picture-options", "zoom"]);
+                let s1 = run_cmd(
+                    "gsettings",
+                    &[
+                        "set",
+                        "org.gnome.desktop.background",
+                        "picture-uri",
+                        &file_uri,
+                    ],
+                );
+                let s2 = run_cmd(
+                    "gsettings",
+                    &[
+                        "set",
+                        "org.gnome.desktop.background",
+                        "picture-uri-dark",
+                        &file_uri,
+                    ],
+                );
+                let _ = run_cmd(
+                    "gsettings",
+                    &[
+                        "set",
+                        "org.gnome.desktop.background",
+                        "picture-options",
+                        "zoom",
+                    ],
+                );
                 if s1 || s2 {
                     return Ok(());
                 }
@@ -192,8 +216,24 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
         }
         Desktop::Cinnamon => {
             if is_command_available("gsettings") {
-                let s = run_cmd("gsettings", &["set", "org.cinnamon.desktop.background", "picture-uri", &file_uri]);
-                let _ = run_cmd("gsettings", &["set", "org.cinnamon.desktop.background", "picture-options", "zoom"]);
+                let s = run_cmd(
+                    "gsettings",
+                    &[
+                        "set",
+                        "org.cinnamon.desktop.background",
+                        "picture-uri",
+                        &file_uri,
+                    ],
+                );
+                let _ = run_cmd(
+                    "gsettings",
+                    &[
+                        "set",
+                        "org.cinnamon.desktop.background",
+                        "picture-options",
+                        "zoom",
+                    ],
+                );
                 if s {
                     return Ok(());
                 }
@@ -201,8 +241,19 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
         }
         Desktop::Mate => {
             if is_command_available("gsettings") {
-                let s = run_cmd("gsettings", &["set", "org.mate.background", "picture-filename", &path_str]);
-                let _ = run_cmd("gsettings", &["set", "org.mate.desktop.background", "picture-options", "zoom"]);
+                let s = run_cmd(
+                    "gsettings",
+                    &["set", "org.mate.background", "picture-filename", &path_str],
+                );
+                let _ = run_cmd(
+                    "gsettings",
+                    &[
+                        "set",
+                        "org.mate.desktop.background",
+                        "picture-options",
+                        "zoom",
+                    ],
+                );
                 if s {
                     return Ok(());
                 }
@@ -210,8 +261,24 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
         }
         Desktop::Deepin => {
             if is_command_available("gsettings") {
-                let s = run_cmd("gsettings", &["set", "com.deepin.wrap.gnome.desktop.background", "picture-uri", &file_uri]);
-                let _ = run_cmd("gsettings", &["set", "com.deepin.wrap.gnome.desktop.background", "picture-options", "zoom"]);
+                let s = run_cmd(
+                    "gsettings",
+                    &[
+                        "set",
+                        "com.deepin.wrap.gnome.desktop.background",
+                        "picture-uri",
+                        &file_uri,
+                    ],
+                );
+                let _ = run_cmd(
+                    "gsettings",
+                    &[
+                        "set",
+                        "com.deepin.wrap.gnome.desktop.background",
+                        "picture-options",
+                        "zoom",
+                    ],
+                );
                 if s {
                     return Ok(());
                 }
@@ -258,7 +325,10 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
                     let mut found = false;
                     for line in out_str.lines() {
                         if line.ends_with("last-image") || line.ends_with("image-path") {
-                            run_cmd("xfconf-query", &["-c", "xfce4-desktop", "-p", line, "-s", &path_str]);
+                            run_cmd(
+                                "xfconf-query",
+                                &["-c", "xfce4-desktop", "-p", line, "-s", &path_str],
+                            );
                             found = true;
                         }
                     }
@@ -283,9 +353,7 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
                 return Ok(());
             }
             if is_process_running("hyprpaper") && is_command_available("hyprctl") {
-                let monitors = Command::new("hyprctl")
-                    .args(["monitors", "all"])
-                    .output();
+                let monitors = Command::new("hyprctl").args(["monitors", "all"]).output();
                 if let Ok(out) = monitors {
                     let out_str = String::from_utf8_lossy(&out.stdout);
                     let mut set_any = false;
@@ -328,8 +396,13 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
                 if let Ok(content) = fs::read_to_string(&cosmic_path) {
                     let mut new_lines = Vec::new();
                     for line in content.lines() {
-                        if line.trim().starts_with("source: Path(") || line.trim().starts_with("source: Color(") {
-                            let indent = line.chars().take_while(|c| c.is_whitespace()).collect::<String>();
+                        if line.trim().starts_with("source: Path(")
+                            || line.trim().starts_with("source: Color(")
+                        {
+                            let indent = line
+                                .chars()
+                                .take_while(|c| c.is_whitespace())
+                                .collect::<String>();
                             new_lines.push(format!("{}source: Path(\"{}\"),", indent, path_str));
                         } else {
                             new_lines.push(line.to_string());
@@ -359,12 +432,12 @@ pub fn set_wallpaper(image_path: &Path) -> Result<()> {
         Desktop::Unknown => {}
     }
 
-    // Wayland compositor fallback
+    // Wayland compositor fallback.
     if set_wlroots(&abs_path) {
         return Ok(());
     }
 
-    // Generic X11 fallbacks (feh, nitrogen)
+    // Generic X11 fallbacks (feh, nitrogen).
     if is_command_available("feh") && run_cmd("feh", &["--bg-fill", &path_str]) {
         return Ok(());
     }

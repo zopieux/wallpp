@@ -24,7 +24,7 @@ struct BatchItemWrapper {
     item: Option<String>,
 }
 
-// v4 response structure inside item string
+// v4 response structure inside item string.
 #[derive(Deserialize)]
 struct SpotlightItemV4 {
     ad: Option<SpotlightAdV4>,
@@ -32,9 +32,6 @@ struct SpotlightItemV4 {
 
 #[derive(Deserialize)]
 struct SpotlightAdV4 {
-    #[serde(rename = "entityId")]
-    #[allow(dead_code)]
-    entity_id: Option<String>,
     title: Option<String>,
     #[serde(rename = "iconHoverText")]
     icon_hover_text: Option<String>,
@@ -52,7 +49,7 @@ struct SpotlightAssetV4 {
     asset: Option<String>,
 }
 
-// v3 response structure inside item string
+// v3 response structure inside item string.
 #[derive(Deserialize)]
 struct SpotlightItemV3 {
     ad: Option<SpotlightAdV3>,
@@ -256,7 +253,9 @@ impl Guest for WindowsProvider {
             Some(Orientation::Portrait) => true,
             Some(Orientation::Landscape) => false,
             Some(Orientation::Square) => false,
-            Some(Orientation::Any) | None => matches!(pref_orientation, "portrait" | "both" | "all"),
+            Some(Orientation::Any) | None => {
+                matches!(pref_orientation, "portrait" | "both" | "all")
+            }
         };
 
         let request_url = if api_version == "v3" {
@@ -277,10 +276,7 @@ impl Guest for WindowsProvider {
         let resp: BatchResponse =
             serde_json::from_slice(&body).map_err(|e| ProviderError::Network(e.to_string()))?;
 
-        let items = resp
-            .batchrsp
-            .map(|r| r.items)
-            .unwrap_or_default();
+        let items = resp.batchrsp.map(|r| r.items).unwrap_or_default();
 
         let mut wallpapers = Vec::new();
         let mut seen_ids = HashSet::new();
@@ -298,7 +294,10 @@ impl Guest for WindowsProvider {
                     continue;
                 };
 
-                let title = ad.title_text.and_then(|t| t.tx).filter(|s| !s.trim().is_empty());
+                let title = ad
+                    .title_text
+                    .and_then(|t| t.tx)
+                    .filter(|s| !s.trim().is_empty());
                 let author = ad
                     .copyright_text
                     .and_then(|t| t.tx)
@@ -307,8 +306,12 @@ impl Guest for WindowsProvider {
                 if want_landscape {
                     if let Some(img) = ad.image_fullscreen_001_landscape {
                         if let Some(u) = img.u {
-                            let size = img.file_size.and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-                            if !u.ends_with("empty.jpg") && size > 736 && seen_ids.insert(u.clone()) {
+                            let size = img
+                                .file_size
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .unwrap_or(0);
+                            if !u.ends_with("empty.jpg") && size > 736 && seen_ids.insert(u.clone())
+                            {
                                 let w = img.w.and_then(|s| s.parse::<u32>().ok()).or(Some(1920));
                                 let h = img.h.and_then(|s| s.parse::<u32>().ok()).or(Some(1080));
                                 wallpapers.push(Wallpaper {
@@ -330,8 +333,12 @@ impl Guest for WindowsProvider {
                 if want_portrait {
                     if let Some(img) = ad.image_fullscreen_001_portrait {
                         if let Some(u) = img.u {
-                            let size = img.file_size.and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-                            if !u.ends_with("empty.jpg") && size > 736 && seen_ids.insert(u.clone()) {
+                            let size = img
+                                .file_size
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .unwrap_or(0);
+                            if !u.ends_with("empty.jpg") && size > 736 && seen_ids.insert(u.clone())
+                            {
                                 let w = img.w.and_then(|s| s.parse::<u32>().ok()).or(Some(1080));
                                 let h = img.h.and_then(|s| s.parse::<u32>().ok()).or(Some(1920));
                                 wallpapers.push(Wallpaper {
@@ -357,31 +364,25 @@ impl Guest for WindowsProvider {
                     continue;
                 };
 
-                let title = ad
-                    .title
-                    .filter(|s| !s.trim().is_empty())
-                    .or_else(|| {
-                        ad.icon_hover_text.as_ref().and_then(|ht| {
-                            ht.lines()
-                                .next()
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                        })
-                    });
+                let title = ad.title.filter(|s| !s.trim().is_empty()).or_else(|| {
+                    ad.icon_hover_text.as_ref().and_then(|ht| {
+                        ht.lines()
+                            .next()
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                    })
+                });
 
-                let author = ad
-                    .copyright
-                    .filter(|s| !s.trim().is_empty())
-                    .or_else(|| {
-                        ad.icon_hover_text.as_ref().and_then(|ht| {
-                            let mut lines = ht.lines();
-                            let _ = lines.next();
-                            lines
-                                .next()
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                        })
-                    });
+                let author = ad.copyright.filter(|s| !s.trim().is_empty()).or_else(|| {
+                    ad.icon_hover_text.as_ref().and_then(|ht| {
+                        let mut lines = ht.lines();
+                        let _ = lines.next();
+                        lines
+                            .next()
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                    })
+                });
 
                 let source_url = ad.cta_uri.as_ref().map(|uri| {
                     if let Some(stripped) = uri.strip_prefix("microsoft-edge:") {
