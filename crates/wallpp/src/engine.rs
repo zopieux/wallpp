@@ -76,7 +76,6 @@ impl<'a> WallpaperEngine<'a> {
         println!("[Applying] Setting desktop wallpaper...");
         let method = wallpaper::set_wallpaper(&meta.cache_path)
             .context("Failed to set desktop wallpaper")?;
-        println!("Method:      {}", method);
 
         if is_new {
             self.state
