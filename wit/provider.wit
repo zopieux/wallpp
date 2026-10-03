@@ -104,6 +104,7 @@ interface provider {
   info: func() -> provider-info;
   %list: func(cfg: config, limit: u32, cursor: option<string>, filter: filter-criteria) -> result<page, provider-error>;
   download: func(cfg: config, id: string) -> result<image, provider-error>;
+  validate-config: func(cfg: config) -> result<config, provider-error>;
 }
 
 world wallpaper-provider {

@@ -386,6 +386,10 @@ impl Guest for WallhavenProvider {
             data,
         })
     }
+
+    fn validate_config(cfg: Config) -> Result<Config, ProviderError> {
+        Ok(cfg)
+    }
 }
 
 wallpp_provider_sdk::export!(WallhavenProvider with_types_in wallpp_provider_sdk);

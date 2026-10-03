@@ -24,7 +24,7 @@ pub enum SourceStrategy {
     RoundRobin,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteSize(pub u64);
 
 impl ByteSize {
@@ -36,6 +36,30 @@ impl ByteSize {
 impl Default for ByteSize {
     fn default() -> Self {
         ByteSize(1024 * 1024 * 1024) // 1 GiB.
+    }
+}
+
+impl std::fmt::Display for ByteSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let b = self.0;
+        if b >= 1024 * 1024 * 1024 && b.is_multiple_of(1024 * 1024 * 1024) {
+            write!(f, "{}G", b / (1024 * 1024 * 1024))
+        } else if b >= 1024 * 1024 && b.is_multiple_of(1024 * 1024) {
+            write!(f, "{}M", b / (1024 * 1024))
+        } else if b >= 1024 && b.is_multiple_of(1024) {
+            write!(f, "{}K", b / 1024)
+        } else {
+            write!(f, "{}B", b)
+        }
+    }
+}
+
+impl Serialize for ByteSize {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
 
@@ -138,7 +162,7 @@ fn default_min_display_percentage() -> u32 {
     100
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagerConfig {
     #[serde(default)]
     pub cache_max_size: ByteSize,
@@ -149,8 +173,12 @@ pub struct ManagerConfig {
     #[serde(default = "default_prefetch_count")]
     pub prefetch_count: usize,
 
-    #[serde(default)]
-    pub refresh_interval: Option<u64>,
+    #[serde(
+        default,
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub refresh_interval: Option<std::time::Duration>,
 
     #[serde(default = "default_true")]
     pub refresh_at_boot: bool,
@@ -189,7 +217,7 @@ impl Default for ManagerConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct AppConfig {
     #[serde(default)]
     pub manager: ManagerConfig,
@@ -198,8 +226,9 @@ pub struct AppConfig {
     pub source: Vec<SourceConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SourceConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub provider: String,
     #[serde(flatten)]
@@ -218,6 +247,43 @@ impl AppConfig {
                 PathBuf::from(home).join(".config")
             });
         base.join("wallpp").join("config.toml")
+    }
+
+    /// Loads the configuration file directly without layering environment variables.
+    /// Used by the TUI config editor so transient env vars are not persisted to disk.
+    pub fn load_file_only() -> Result<Self> {
+        let path = Self::config_path();
+        if path.exists() {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read config file at {:?}", path))?;
+            let app_config: AppConfig = toml::from_str(&text)
+                .with_context(|| format!("Failed to parse config from {:?}", path))?;
+            Ok(app_config)
+        } else {
+            Ok(AppConfig::default())
+        }
+    }
+
+    /// Atomically writes the configuration to disk in TOML format.
+    pub fn save(&self) -> Result<()> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config directory at {:?}", parent))?;
+        }
+        let serialized =
+            toml::to_string_pretty(self).context("Failed to serialize configuration to TOML")?;
+
+        let tmp_path = path.with_extension(format!("toml.tmp.{}", std::process::id()));
+        std::fs::write(&tmp_path, serialized)
+            .with_context(|| format!("Failed to write temporary config file at {:?}", tmp_path))?;
+        std::fs::rename(&tmp_path, &path).with_context(|| {
+            format!(
+                "Failed to atomic rename config file {:?} to {:?}",
+                tmp_path, path
+            )
+        })?;
+        Ok(())
     }
 
     pub fn load_or_default() -> Result<Self> {

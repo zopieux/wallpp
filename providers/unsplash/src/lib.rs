@@ -355,6 +355,10 @@ impl Guest for UnsplashProvider {
             data,
         })
     }
+
+    fn validate_config(cfg: Config) -> Result<Config, ProviderError> {
+        Ok(cfg)
+    }
 }
 
 wallpp_provider_sdk::export!(UnsplashProvider with_types_in wallpp_provider_sdk);

@@ -32,20 +32,23 @@ The generated `.wasm` files land in `$CARGO_TARGET_DIR/wasm32-wasip2/{debug,rele
 ### Run the manager CLI
 
 ```bash
-# Inspect all provider search paths and their status
-cargo run -p wallpp -- search-paths
+# Run as resident background service (default on-boot and interval refresh)
+cargo run -p wallpp
 
-# Inspect discovered providers and their schema / options
-cargo run -p wallpp -- providers
+# Pick next wallpaper, download it, and apply it to the desktop
+cargo run -p wallpp -- next
 
-# Query and list wallpapers from configured sources
-cargo run -p wallpp -- list
+# Switch to the previous wallpaper in history
+cargo run -p wallpp -- previous
 
 # Preview next wallpaper (downloads to cache and prints details without setting)
 cargo run -p wallpp -- preview
 
-# Pick next wallpaper, download it, and apply it to the desktop (default)
-cargo run -p wallpp -- next
+# Open interactive TUI configuration editor
+cargo run -p wallpp -- config
+
+# Inspect all provider search paths and their status
+cargo run -p wallpp -- search-paths
 ```
 
 ## Configuration
@@ -64,38 +67,13 @@ provider = "reddit"
 subreddits = ["EarthPorn", "wallpapers"]
 sort = "top"
 time = "week"
-
-# Windows Spotlight provider instance
-[[source]]
-name = "spotlight-4k"
-provider = "windows"
-locale = "en-US"
-orientation = "landscape"
-
-# Unsplash provider instance
-[[source]]
-name = "unsplash-nature"
-provider = "unsplash"
-orientation = "landscape"
-query = "nature wallpapers"
-# api_key = "..." # Optional override (defaults to built-in client ID)
-
-# Wallhaven provider instance
-[[source]]
-name = "wallhaven-random"
-provider = "wallhaven"
-sorting = "random"
-orientation = "landscape"
-allow_sketchy = false
-allow_nsfw = false
 ```
 
 To run against a specific source:
 
 ```bash
-cargo run -p wallpp -- list --source nature
-cargo run -p wallpp -- preview --source spotlight-4k
-cargo run -p wallpp -- next --source spotlight-4k
+cargo run -p wallpp -- next --source nature
+cargo run -p wallpp -- preview --source nature
 ```
 
 ## Create a new provider
