@@ -146,6 +146,13 @@ fn parse_byte_size(s: &str) -> Result<u64, String> {
     Ok((val * multiplier as f64) as u64)
 }
 
+impl std::str::FromStr for ByteSize {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_byte_size(s).map(ByteSize)
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -217,6 +224,26 @@ impl Default for ManagerConfig {
     }
 }
 
+impl ManagerConfig {
+    pub fn refresh_interval_str(&self) -> String {
+        self.refresh_interval
+            .map(|d| humantime::format_duration(d).to_string())
+            .unwrap_or_default()
+    }
+
+    pub fn set_refresh_interval_from_str(&mut self, s: &str) -> anyhow::Result<()> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+            self.refresh_interval = None;
+            Ok(())
+        } else {
+            let dur = humantime::parse_duration(trimmed)?;
+            self.refresh_interval = Some(dur);
+            Ok(())
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct AppConfig {
     #[serde(default)]
@@ -233,6 +260,131 @@ pub struct SourceConfig {
     pub provider: String,
     #[serde(flatten)]
     pub options: HashMap<String, toml::Value>,
+}
+
+impl SourceConfig {
+    pub fn new(provider: impl Into<String>) -> Self {
+        Self {
+            name: None,
+            provider: provider.into(),
+            options: HashMap::new(),
+        }
+    }
+
+    pub fn from_default_config(
+        provider: String,
+        default_config: &[crate::wallpp::provider::types::ConfigEntry],
+    ) -> Self {
+        use crate::wallpp::provider::types::{ConfigValue, ScalarValue};
+        let mut sc = Self::new(provider);
+        for entry in default_config {
+            match &entry.value {
+                ConfigValue::One(ScalarValue::Text(s)) => sc.set_option_string(&entry.key, s),
+                ConfigValue::One(ScalarValue::Choice(s)) => sc.set_option_string(&entry.key, s),
+                ConfigValue::One(ScalarValue::Integer(i)) => sc.set_option_int(&entry.key, *i),
+                ConfigValue::One(ScalarValue::Boolean(b)) => sc.set_option_bool(&entry.key, *b),
+                ConfigValue::Many(items) => {
+                    let strings: Vec<String> = items
+                        .iter()
+                        .map(|it| match it {
+                            ScalarValue::Text(s) | ScalarValue::Choice(s) => s.clone(),
+                            ScalarValue::Integer(i) => i.to_string(),
+                            ScalarValue::Boolean(b) => b.to_string(),
+                        })
+                        .collect();
+                    sc.set_option_string_list(&entry.key, &strings);
+                }
+            }
+        }
+        sc
+    }
+
+    pub fn get_option_string(&self, key: &str) -> Option<String> {
+        match self.options.get(key) {
+            Some(toml::Value::String(s)) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn get_option_bool(&self, key: &str) -> Option<bool> {
+        match self.options.get(key) {
+            Some(toml::Value::Boolean(b)) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn get_option_int(&self, key: &str) -> Option<i64> {
+        match self.options.get(key) {
+            Some(toml::Value::Integer(i)) => Some(*i),
+            _ => None,
+        }
+    }
+
+    pub fn get_option_string_list(&self, key: &str) -> Vec<String> {
+        match self.options.get(key) {
+            Some(toml::Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| match v {
+                    toml::Value::String(s) => Some(s.clone()),
+                    toml::Value::Integer(i) => Some(i.to_string()),
+                    toml::Value::Boolean(b) => Some(b.to_string()),
+                    _ => None,
+                })
+                .collect(),
+            Some(toml::Value::String(s)) => s
+                .split(',')
+                .map(|it| it.trim().to_string())
+                .filter(|it| !it.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn set_option_string(&mut self, key: &str, val: impl Into<String>) {
+        let s = val.into();
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            self.options.remove(key);
+        } else {
+            self.options
+                .insert(key.to_string(), toml::Value::String(trimmed.to_string()));
+        }
+    }
+
+    pub fn set_option_bool(&mut self, key: &str, val: bool) {
+        self.options
+            .insert(key.to_string(), toml::Value::Boolean(val));
+    }
+
+    pub fn set_option_int(&mut self, key: &str, val: i64) {
+        self.options
+            .insert(key.to_string(), toml::Value::Integer(val));
+    }
+
+    pub fn set_option_string_list(&mut self, key: &str, vals: &[String]) {
+        if vals.is_empty() {
+            self.options.remove(key);
+        } else {
+            let arr = vals
+                .iter()
+                .map(|s| toml::Value::String(s.clone()))
+                .collect();
+            self.options
+                .insert(key.to_string(), toml::Value::Array(arr));
+        }
+    }
+
+    pub fn remove_option(&mut self, key: &str) {
+        self.options.remove(key);
+    }
+
+    pub fn to_wit_config(
+        &self,
+        specs: &[crate::wallpp::provider::types::OptionSpec],
+        default_config: &[ConfigEntry],
+    ) -> WitConfig {
+        toml_to_wit_config(&self.options, specs, default_config)
+    }
 }
 
 impl AppConfig {

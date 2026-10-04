@@ -335,15 +335,35 @@ impl Guest for RedditProvider {
                     let mut subs: Vec<String> = raw_items
                         .iter()
                         .flat_map(|s| s.split(|c: char| c == ',' || c == '+' || c.is_whitespace()))
-                        .map(|s| {
-                            let trimmed = s.trim();
-                            trimmed
-                                .strip_prefix("/r/")
-                                .or_else(|| trimmed.strip_prefix("r/"))
-                                .unwrap_or(trimmed)
-                                .to_string()
+                        .filter_map(|s| {
+                            let mut trimmed = s.trim();
+                            if trimmed.is_empty() {
+                                return None;
+                            }
+                            if let Some(rest) = trimmed.strip_prefix("https://") {
+                                trimmed = rest;
+                            } else if let Some(rest) = trimmed.strip_prefix("http://") {
+                                trimmed = rest;
+                            }
+                            if let Some(idx) = trimmed.find("reddit.com/") {
+                                trimmed = &trimmed[idx + "reddit.com/".len()..];
+                            } else if trimmed == "reddit.com" || trimmed.ends_with(".reddit.com") {
+                                return None;
+                            }
+                            if let Some(rest) = trimmed.strip_prefix("/r/") {
+                                trimmed = rest;
+                            } else if let Some(rest) = trimmed.strip_prefix("r/") {
+                                trimmed = rest;
+                            }
+                            let trimmed = trimmed.trim_matches('/');
+                            let name = trimmed.split('/').next().unwrap_or("").trim();
+                            let name = name.split('?').next().unwrap_or("").trim();
+                            if name.is_empty() {
+                                None
+                            } else {
+                                Some(name.to_string())
+                            }
                         })
-                        .filter(|s| !s.is_empty())
                         .collect();
 
                     // Sort and deduplicate for determinism.
@@ -413,7 +433,7 @@ mod tests {
         let input = vec![ConfigEntry {
             key: "subreddits".to_string(),
             value: ConfigValue::One(ScalarValue::Text(
-                "r/wallpapers, /r/earthporn + spaceporn\n  r/art   ".to_string(),
+                "https://www.reddit.com/r/wallpapers, /r/earthporn\thttps://reddit.com/r/spaceporn/ + r/art\n  r/art   ".to_string(),
             )),
         }];
 
@@ -429,7 +449,7 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            // Should be stripped of r/, split, sorted, and deduplicated.
+            // Should be stripped of url, r/, split, sorted, and deduplicated.
             assert_eq!(names, vec!["art", "earthporn", "spaceporn", "wallpapers"]);
         } else {
             panic!("Expected ConfigValue::Many.");

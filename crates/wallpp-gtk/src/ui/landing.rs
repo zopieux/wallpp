@@ -1,5 +1,7 @@
 use gtk4::prelude::*;
-use gtk4::{Box, Button, GestureClick, Grid, Label, Orientation, Overlay, Picture, ScrolledWindow, Widget};
+use gtk4::{
+    Box, Button, GestureClick, Grid, Label, Orientation, Overlay, Picture, ScrolledWindow, Widget,
+};
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
@@ -326,7 +328,8 @@ impl LandingView {
         self.timeline.clear();
         let weak = self.self_weak.borrow().clone();
         for item in &items {
-            self.timeline.append(&build_card(item, &weak, &self.backend));
+            self.timeline
+                .append(&build_card(item, &weak, &self.backend));
         }
 
         self.pending_scroll.set(active_idx);
@@ -339,7 +342,11 @@ impl LandingView {
     }
 }
 
-fn build_card(item: &WallpaperItem, landing_weak: &Weak<LandingView>, backend: &Rc<BackendHandle>) -> Overlay {
+fn build_card(
+    item: &WallpaperItem,
+    landing_weak: &Weak<LandingView>,
+    backend: &Rc<BackendHandle>,
+) -> Overlay {
     let overlay = Overlay::new();
     overlay.add_css_class("timeline-card");
     overlay.set_overflow(gtk4::Overflow::Hidden);

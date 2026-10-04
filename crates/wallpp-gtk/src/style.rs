@@ -77,6 +77,19 @@ pub fn init_css() {
             background-color: alpha(currentColor, 0.04);
             border-top: 1px solid alpha(currentColor, 0.12);
         }
+        .multiline-scroll {
+            border: 1px solid alpha(currentColor, 0.18);
+            border-radius: 6px;
+            background-color: alpha(currentColor, 0.04);
+            padding: 4px;
+        }
+        .multiline-scroll:focus-within {
+            border-color: #3584e4;
+        }
+        .multiline-entry {
+            background-color: transparent;
+            font-size: 0.95em;
+        }
         ",
     );
     if let Some(display) = gdk::Display::default() {

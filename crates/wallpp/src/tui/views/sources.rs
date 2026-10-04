@@ -405,3 +405,9 @@ impl SourcesView {
         }
     }
 }
+
+impl Default for SourcesView {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -357,3 +357,9 @@ impl HistoryView {
         }
     }
 }
+
+impl Default for HistoryView {
+    fn default() -> Self {
+        Self::new()
+    }
+}

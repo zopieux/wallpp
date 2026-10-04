@@ -19,9 +19,7 @@ fn main() {
         .expect("Failed to initialize Tokio runtime");
     let _guard = rt.enter();
 
-    let app = Application::builder()
-        .application_id(APP_ID)
-        .build();
+    let app = Application::builder().application_id(APP_ID).build();
 
     app.connect_startup(|_| {
         style::init_css();
@@ -37,8 +35,12 @@ fn build_ui(app: &Application) {
 
     let (ui_tx, ui_rx) = async_channel::unbounded();
 
-    let backend = Rc::new(backend::start_backend(app_cfg, state.clone(), ui_tx));
-    let main_window = Rc::new(MainWindow::new(app, backend, &state));
+    let backend = Rc::new(backend::start_backend(
+        app_cfg.clone(),
+        state.clone(),
+        ui_tx,
+    ));
+    let main_window = Rc::new(MainWindow::new(app, backend, &app_cfg, &state));
 
     let win_clone = main_window.clone();
     glib::spawn_future_local(async move {

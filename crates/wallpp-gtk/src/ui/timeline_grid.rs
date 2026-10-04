@@ -60,7 +60,8 @@ mod imp {
                     } else {
                         0
                     };
-                    (h, h, -1, -1)
+                    let min_h = if rows > 0 { layout.cell_h } else { 0 };
+                    (min_h, h, -1, -1)
                 }
             }
         }
@@ -76,7 +77,11 @@ mod imp {
                     let row = idx / layout.cols;
                     let x = col * (layout.cell_w + sp);
                     let y = row * (layout.cell_h + sp);
-                    let w = if col == layout.cols - 1 { width - x } else { layout.cell_w };
+                    let w = if col == layout.cols - 1 {
+                        width - x
+                    } else {
+                        layout.cell_w
+                    };
                     c.measure(Orientation::Horizontal, -1);
                     c.size_allocate(&Allocation::new(x, y, w, layout.cell_h), -1);
                     idx += 1;
@@ -126,7 +131,11 @@ mod imp {
 
             let cell_w = (width - (cols - 1) * sp) / cols;
             let cell_h = (cell_w as f64 / aspect).round() as i32;
-            Layout { cols, cell_w, cell_h }
+            Layout {
+                cols,
+                cell_w,
+                cell_h,
+            }
         }
     }
 }
