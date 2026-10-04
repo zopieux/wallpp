@@ -2,28 +2,12 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
-mod cache;
-mod config;
-mod engine;
-mod monitor;
-mod prefetch;
-mod provider;
-mod sources;
-mod state;
-mod tui;
-mod wallpaper;
-
-use cache::CacheManager;
-use config::AppConfig;
-use engine::WallpaperEngine;
-use provider::ProviderManager;
-use state::State;
-
-wasmtime::component::bindgen!({
-    path: "../../wit",
-    world: "wallpaper-provider",
-    exports: { default: async },
-});
+use wallpp::cache::CacheManager;
+use wallpp::config::AppConfig;
+use wallpp::engine::WallpaperEngine;
+use wallpp::provider::ProviderManager;
+use wallpp::state::State;
+use wallpp::tui;
 
 #[derive(Parser)]
 #[command(

@@ -3,5 +3,5 @@ members = [
     "crates/*",
     "providers/*",
 ]
-default-members = ["crates/wallpp"]
+default-members = ["crates/wallpp", "crates/wallpp-gtk"]
 resolver = "2"
