@@ -1,0 +1,17 @@
+[package]
+name = "wallpp-gtk"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Forwards to wallpp/sandbox-proxy (egress-proxy support for sandboxed
+# dev VMs). Not needed for normal builds.
+sandbox-proxy = ["wallpp/sandbox-proxy"]
+
+[dependencies]
+wallpp = { path = "../wallpp" }
+gtk4 = { version = "0.9", features = ["v4_8"] }
+glib = "0.20"
+async-channel = "2"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"

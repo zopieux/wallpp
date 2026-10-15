@@ -36,12 +36,33 @@ impl WasiHttpView for HostState {
     fn table(&mut self) -> &mut ResourceTable {
         &mut self.table
     }
+    #[cfg(feature = "sandbox-proxy")]
+    fn send_request(
+        &mut self,
+        request: hyper::Request<wasmtime_wasi_http::body::HyperOutgoingBody>,
+        config: wasmtime_wasi_http::types::OutgoingRequestConfig,
+    ) -> wasmtime_wasi_http::HttpResult<wasmtime_wasi_http::types::HostFutureIncomingResponse> {
+        crate::http_proxy::send_request(request, config)
+    }
 }
 
+#[derive(Clone)]
 pub struct DiscoveredProvider {
     pub name: String,
     pub path: PathBuf,
     pub info: ProviderInfo,
+    /// Compiled component, cached so list/download/validate calls do not
+    /// re-JIT-compile the provider `.wasm` on every invocation.
+    pub component: Component,
+}
+
+impl std::fmt::Debug for DiscoveredProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscoveredProvider")
+            .field("name", &self.name)
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
 }
 
 pub struct ProviderManager {
@@ -54,6 +75,12 @@ impl ProviderManager {
     pub async fn new() -> Result<Self> {
         let mut cfg = Config::new();
         cfg.wasm_component_model(true).async_support(true);
+        // Enable Wasmtime's on-disk compilation cache so repeated
+        // `Component::from_file` calls across runs do not re-JIT-compile
+        // every provider from scratch (tens of seconds in debug builds).
+        if let Ok(cache) = wasmtime::Cache::from_file(None) {
+            cfg.cache(Some(cache));
+        }
         let engine = Engine::new(&cfg)?;
 
         let mut linker = Linker::<HostState>::new(&engine);
@@ -72,7 +99,7 @@ impl ProviderManager {
     pub fn search_dirs() -> Vec<PathBuf> {
         let mut dirs = Vec::new();
 
-        // 1. Explicit override via environment variable.
+        // Explicit override via environment variable.
         if let Ok(paths) = std::env::var("WALLPP_PROVIDERS_DIR") {
             for p in paths.split(':') {
                 if !p.is_empty() {
@@ -81,7 +108,7 @@ impl ProviderManager {
             }
         }
 
-        // 2. User XDG data directory (~/.local/share/wallpp/providers).
+        // User XDG data directory (~/.local/share/wallpp/providers).
         let user_data = std::env::var("XDG_DATA_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -90,7 +117,7 @@ impl ProviderManager {
             });
         dirs.push(user_data.join("wallpp").join("providers"));
 
-        // 4. System XDG directories.
+        // System XDG directories.
         let system_data = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| {
             "/usr/local/share:/usr/share:/run/current-system/sw/share".to_string()
         });
@@ -147,6 +174,7 @@ impl ProviderManager {
                 name: info.name.clone(),
                 path: path.to_path_buf(),
                 info,
+                component,
             },
         );
 
@@ -166,7 +194,7 @@ impl ProviderManager {
             .get(provider_name)
             .with_context(|| format!("Provider '{}' not found in search paths", provider_name))?;
 
-        let component = Component::from_file(&self.engine, &discovered.path)?;
+        let component = &discovered.component;
         let mut store = Store::new(
             &self.engine,
             HostState {
@@ -179,7 +207,7 @@ impl ProviderManager {
         store.limiter(|s| &mut s.limits);
 
         let instance =
-            WallpaperProvider::instantiate_async(&mut store, &component, &self.linker).await?;
+            WallpaperProvider::instantiate_async(&mut store, component, &self.linker).await?;
         let guest = instance.wallpp_provider_provider();
         let mut page = guest
             .call_list(&mut store, &cfg, limit, cursor.as_deref(), filter)
@@ -203,7 +231,7 @@ impl ProviderManager {
             .get(provider_name)
             .with_context(|| format!("Provider '{}' not found in search paths", provider_name))?;
 
-        let component = Component::from_file(&self.engine, &discovered.path)?;
+        let component = &discovered.component;
         let mut store = Store::new(
             &self.engine,
             HostState {
@@ -216,7 +244,7 @@ impl ProviderManager {
         store.limiter(|s| &mut s.limits);
 
         let instance =
-            WallpaperProvider::instantiate_async(&mut store, &component, &self.linker).await?;
+            WallpaperProvider::instantiate_async(&mut store, component, &self.linker).await?;
         let guest = instance.wallpp_provider_provider();
         let image = guest
             .call_download(&mut store, &cfg, id)
@@ -224,6 +252,37 @@ impl ProviderManager {
             .map_err(|e| anyhow::anyhow!("Provider download error: {:?}", e))?;
 
         Ok(image)
+    }
+
+    pub async fn validate_config(&self, provider_name: &str, cfg: WitConfig) -> Result<WitConfig> {
+        let discovered = self
+            .providers
+            .get(provider_name)
+            .with_context(|| format!("Provider '{}' not found in search paths", provider_name))?;
+
+        let component = &discovered.component;
+        let mut store = Store::new(
+            &self.engine,
+            HostState {
+                wasi: WasiCtxBuilder::new().build(),
+                http: WasiHttpCtx::new(),
+                table: ResourceTable::new(),
+                limits: StoreLimitsBuilder::new().memory_size(64 << 20).build(),
+            },
+        );
+        store.limiter(|s| &mut s.limits);
+
+        let instance =
+            WallpaperProvider::instantiate_async(&mut store, component, &self.linker).await?;
+        let guest = instance.wallpp_provider_provider();
+        let validated = guest
+            .call_validate_config(&mut store, &cfg)
+            .await?
+            .map_err(|e| {
+                anyhow::anyhow!("Invalid config for provider '{}': {:?}", provider_name, e)
+            })?;
+
+        Ok(validated)
     }
 }
 

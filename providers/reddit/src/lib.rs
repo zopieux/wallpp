@@ -117,7 +117,7 @@ impl Guest for RedditProvider {
                 OptionSpec {
                     key: "subreddits".to_string(),
                     label: "Subreddits".to_string(),
-                    description: Some("List of subreddits to fetch wallpapers from".to_string()),
+                    description: Some("One subreddit per line.".to_string()),
                     ty: ScalarType::Text,
                     multiple: true,
                     required: true,
@@ -311,6 +311,162 @@ impl Guest for RedditProvider {
             data,
         })
     }
+
+    fn validate_config(cfg: Config) -> Result<Config, ProviderError> {
+        let mut normalized = Vec::new();
+        let mut has_subreddits = false;
+
+        for entry in cfg {
+            match entry.key.as_str() {
+                "subreddits" => {
+                    has_subreddits = true;
+                    let raw_items: Vec<String> = match entry.value {
+                        ConfigValue::One(ScalarValue::Text(s)) => vec![s],
+                        ConfigValue::Many(items) => items
+                            .into_iter()
+                            .filter_map(|it| match it {
+                                ScalarValue::Text(s) => Some(s),
+                                _ => None,
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+
+                    let mut subs: Vec<String> = raw_items
+                        .iter()
+                        .flat_map(|s| s.split(|c: char| c == ',' || c == '+' || c.is_whitespace()))
+                        .filter_map(|s| {
+                            let mut trimmed = s.trim();
+                            if trimmed.is_empty() {
+                                return None;
+                            }
+                            if let Some(rest) = trimmed.strip_prefix("https://") {
+                                trimmed = rest;
+                            } else if let Some(rest) = trimmed.strip_prefix("http://") {
+                                trimmed = rest;
+                            }
+                            if let Some(idx) = trimmed.find("reddit.com/") {
+                                trimmed = &trimmed[idx + "reddit.com/".len()..];
+                            } else if trimmed == "reddit.com" || trimmed.ends_with(".reddit.com") {
+                                return None;
+                            }
+                            if let Some(rest) = trimmed.strip_prefix("/r/") {
+                                trimmed = rest;
+                            } else if let Some(rest) = trimmed.strip_prefix("r/") {
+                                trimmed = rest;
+                            }
+                            let trimmed = trimmed.trim_matches('/');
+                            let name = trimmed.split('/').next().unwrap_or("").trim();
+                            let name = name.split('?').next().unwrap_or("").trim();
+                            if name.is_empty() {
+                                None
+                            } else {
+                                Some(name.to_string())
+                            }
+                        })
+                        .collect();
+
+                    // Sort and deduplicate for determinism.
+                    subs.sort();
+                    subs.dedup();
+
+                    if subs.is_empty() {
+                        return Err(ProviderError::InvalidConfig(
+                            "At least one subreddit must be specified.".to_string(),
+                        ));
+                    }
+
+                    normalized.push(ConfigEntry {
+                        key: "subreddits".to_string(),
+                        value: ConfigValue::Many(subs.into_iter().map(ScalarValue::Text).collect()),
+                    });
+                }
+                "sort" => {
+                    if let ConfigValue::One(ScalarValue::Choice(ref s)) = entry.value {
+                        if !matches!(s.as_str(), "hot" | "new" | "top") {
+                            return Err(ProviderError::InvalidConfig(format!(
+                                "Invalid sort method '{}'. Expected 'hot', 'new', or 'top'.",
+                                s
+                            )));
+                        }
+                    }
+                    normalized.push(entry);
+                }
+                "time" => {
+                    if let ConfigValue::One(ScalarValue::Choice(ref s)) = entry.value {
+                        if !matches!(
+                            s.as_str(),
+                            "hour" | "day" | "week" | "month" | "year" | "all"
+                        ) {
+                            return Err(ProviderError::InvalidConfig(format!(
+                                "Invalid time window '{}'. Expected 'hour', 'day', 'week', 'month', 'year', or 'all'.",
+                                s
+                            )));
+                        }
+                    }
+                    normalized.push(entry);
+                }
+                _ => {
+                    normalized.push(entry);
+                }
+            }
+        }
+
+        if !has_subreddits {
+            return Err(ProviderError::InvalidConfig(
+                "Missing required option: 'subreddits'.".to_string(),
+            ));
+        }
+
+        Ok(normalized)
+    }
 }
 
 wallpp_provider_sdk::export!(RedditProvider with_types_in wallpp_provider_sdk);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_config_normalization() {
+        let input = vec![ConfigEntry {
+            key: "subreddits".to_string(),
+            value: ConfigValue::One(ScalarValue::Text(
+                "https://www.reddit.com/r/wallpapers, /r/earthporn\thttps://reddit.com/r/spaceporn/ + r/art\n  r/art   ".to_string(),
+            )),
+        }];
+
+        let result = RedditProvider::validate_config(input).expect("Validation should succeed.");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].key, "subreddits");
+
+        if let ConfigValue::Many(ref items) = result[0].value {
+            let names: Vec<&str> = items
+                .iter()
+                .filter_map(|it| match it {
+                    ScalarValue::Text(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .collect();
+            // Should be stripped of url, r/, split, sorted, and deduplicated.
+            assert_eq!(names, vec!["art", "earthporn", "spaceporn", "wallpapers"]);
+        } else {
+            panic!("Expected ConfigValue::Many.");
+        }
+    }
+
+    #[test]
+    fn test_validate_config_empty_fails() {
+        let input = vec![ConfigEntry {
+            key: "subreddits".to_string(),
+            value: ConfigValue::One(ScalarValue::Text("   ".to_string())),
+        }];
+
+        let err = RedditProvider::validate_config(input).unwrap_err();
+        match err {
+            ProviderError::InvalidConfig(_) => {}
+            _ => panic!("Expected InvalidConfig error."),
+        }
+    }
+}

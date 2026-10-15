@@ -24,7 +24,7 @@ pub enum SourceStrategy {
     RoundRobin,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteSize(pub u64);
 
 impl ByteSize {
@@ -36,6 +36,30 @@ impl ByteSize {
 impl Default for ByteSize {
     fn default() -> Self {
         ByteSize(1024 * 1024 * 1024) // 1 GiB.
+    }
+}
+
+impl std::fmt::Display for ByteSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let b = self.0;
+        if b >= 1024 * 1024 * 1024 && b.is_multiple_of(1024 * 1024 * 1024) {
+            write!(f, "{}G", b / (1024 * 1024 * 1024))
+        } else if b >= 1024 * 1024 && b.is_multiple_of(1024 * 1024) {
+            write!(f, "{}M", b / (1024 * 1024))
+        } else if b >= 1024 && b.is_multiple_of(1024) {
+            write!(f, "{}K", b / 1024)
+        } else {
+            write!(f, "{}B", b)
+        }
+    }
+}
+
+impl Serialize for ByteSize {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
 
@@ -122,6 +146,13 @@ fn parse_byte_size(s: &str) -> Result<u64, String> {
     Ok((val * multiplier as f64) as u64)
 }
 
+impl std::str::FromStr for ByteSize {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_byte_size(s).map(ByteSize)
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -138,7 +169,7 @@ fn default_min_display_percentage() -> u32 {
     100
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagerConfig {
     #[serde(default)]
     pub cache_max_size: ByteSize,
@@ -149,8 +180,12 @@ pub struct ManagerConfig {
     #[serde(default = "default_prefetch_count")]
     pub prefetch_count: usize,
 
-    #[serde(default)]
-    pub refresh_interval: Option<u64>,
+    #[serde(
+        default,
+        with = "humantime_serde::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub refresh_interval: Option<std::time::Duration>,
 
     #[serde(default = "default_true")]
     pub refresh_at_boot: bool,
@@ -189,7 +224,27 @@ impl Default for ManagerConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+impl ManagerConfig {
+    pub fn refresh_interval_str(&self) -> String {
+        self.refresh_interval
+            .map(|d| humantime::format_duration(d).to_string())
+            .unwrap_or_default()
+    }
+
+    pub fn set_refresh_interval_from_str(&mut self, s: &str) -> anyhow::Result<()> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+            self.refresh_interval = None;
+            Ok(())
+        } else {
+            let dur = humantime::parse_duration(trimmed)?;
+            self.refresh_interval = Some(dur);
+            Ok(())
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Default)]
 pub struct AppConfig {
     #[serde(default)]
     pub manager: ManagerConfig,
@@ -198,12 +253,138 @@ pub struct AppConfig {
     pub source: Vec<SourceConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SourceConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub provider: String,
     #[serde(flatten)]
     pub options: HashMap<String, toml::Value>,
+}
+
+impl SourceConfig {
+    pub fn new(provider: impl Into<String>) -> Self {
+        Self {
+            name: None,
+            provider: provider.into(),
+            options: HashMap::new(),
+        }
+    }
+
+    pub fn from_default_config(
+        provider: String,
+        default_config: &[crate::wallpp::provider::types::ConfigEntry],
+    ) -> Self {
+        use crate::wallpp::provider::types::{ConfigValue, ScalarValue};
+        let mut sc = Self::new(provider);
+        for entry in default_config {
+            match &entry.value {
+                ConfigValue::One(ScalarValue::Text(s)) => sc.set_option_string(&entry.key, s),
+                ConfigValue::One(ScalarValue::Choice(s)) => sc.set_option_string(&entry.key, s),
+                ConfigValue::One(ScalarValue::Integer(i)) => sc.set_option_int(&entry.key, *i),
+                ConfigValue::One(ScalarValue::Boolean(b)) => sc.set_option_bool(&entry.key, *b),
+                ConfigValue::Many(items) => {
+                    let strings: Vec<String> = items
+                        .iter()
+                        .map(|it| match it {
+                            ScalarValue::Text(s) | ScalarValue::Choice(s) => s.clone(),
+                            ScalarValue::Integer(i) => i.to_string(),
+                            ScalarValue::Boolean(b) => b.to_string(),
+                        })
+                        .collect();
+                    sc.set_option_string_list(&entry.key, &strings);
+                }
+            }
+        }
+        sc
+    }
+
+    pub fn get_option_string(&self, key: &str) -> Option<String> {
+        match self.options.get(key) {
+            Some(toml::Value::String(s)) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn get_option_bool(&self, key: &str) -> Option<bool> {
+        match self.options.get(key) {
+            Some(toml::Value::Boolean(b)) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn get_option_int(&self, key: &str) -> Option<i64> {
+        match self.options.get(key) {
+            Some(toml::Value::Integer(i)) => Some(*i),
+            _ => None,
+        }
+    }
+
+    pub fn get_option_string_list(&self, key: &str) -> Vec<String> {
+        match self.options.get(key) {
+            Some(toml::Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| match v {
+                    toml::Value::String(s) => Some(s.clone()),
+                    toml::Value::Integer(i) => Some(i.to_string()),
+                    toml::Value::Boolean(b) => Some(b.to_string()),
+                    _ => None,
+                })
+                .collect(),
+            Some(toml::Value::String(s)) => s
+                .split(',')
+                .map(|it| it.trim().to_string())
+                .filter(|it| !it.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn set_option_string(&mut self, key: &str, val: impl Into<String>) {
+        let s = val.into();
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            self.options.remove(key);
+        } else {
+            self.options
+                .insert(key.to_string(), toml::Value::String(trimmed.to_string()));
+        }
+    }
+
+    pub fn set_option_bool(&mut self, key: &str, val: bool) {
+        self.options
+            .insert(key.to_string(), toml::Value::Boolean(val));
+    }
+
+    pub fn set_option_int(&mut self, key: &str, val: i64) {
+        self.options
+            .insert(key.to_string(), toml::Value::Integer(val));
+    }
+
+    pub fn set_option_string_list(&mut self, key: &str, vals: &[String]) {
+        if vals.is_empty() {
+            self.options.remove(key);
+        } else {
+            let arr = vals
+                .iter()
+                .map(|s| toml::Value::String(s.clone()))
+                .collect();
+            self.options
+                .insert(key.to_string(), toml::Value::Array(arr));
+        }
+    }
+
+    pub fn remove_option(&mut self, key: &str) {
+        self.options.remove(key);
+    }
+
+    pub fn to_wit_config(
+        &self,
+        specs: &[crate::wallpp::provider::types::OptionSpec],
+        default_config: &[ConfigEntry],
+    ) -> WitConfig {
+        toml_to_wit_config(&self.options, specs, default_config)
+    }
 }
 
 impl AppConfig {
@@ -218,6 +399,43 @@ impl AppConfig {
                 PathBuf::from(home).join(".config")
             });
         base.join("wallpp").join("config.toml")
+    }
+
+    /// Loads the configuration file directly without layering environment variables.
+    /// Used by the GTK config editor so transient env vars are not persisted to disk.
+    pub fn load_file_only() -> Result<Self> {
+        let path = Self::config_path();
+        if path.exists() {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read config file at {:?}", path))?;
+            let app_config: AppConfig = toml::from_str(&text)
+                .with_context(|| format!("Failed to parse config from {:?}", path))?;
+            Ok(app_config)
+        } else {
+            Ok(AppConfig::default())
+        }
+    }
+
+    /// Atomically writes the configuration to disk in TOML format.
+    pub fn save(&self) -> Result<()> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config directory at {:?}", parent))?;
+        }
+        let serialized =
+            toml::to_string_pretty(self).context("Failed to serialize configuration to TOML")?;
+
+        let tmp_path = path.with_extension(format!("toml.tmp.{}", std::process::id()));
+        std::fs::write(&tmp_path, serialized)
+            .with_context(|| format!("Failed to write temporary config file at {:?}", tmp_path))?;
+        std::fs::rename(&tmp_path, &path).with_context(|| {
+            format!(
+                "Failed to atomic rename config file {:?} to {:?}",
+                tmp_path, path
+            )
+        })?;
+        Ok(())
     }
 
     pub fn load_or_default() -> Result<Self> {

@@ -139,6 +139,16 @@ impl State {
         }
     }
 
+    /// Selects an existing history entry and promotes it to a new head entry (index 0).
+    /// Updates the timestamp and sets it as the active wallpaper.
+    pub fn promote(&mut self, history_idx: usize, max_history: usize) -> Option<WallpaperMetadata> {
+        let entry = self.history.get(history_idx)?.clone();
+        let mut new_entry = entry;
+        new_entry.changed_at = current_utc_timestamp();
+        self.add_to_history(new_entry.clone(), max_history);
+        Some(new_entry)
+    }
+
     pub fn get_current_wallpaper(&self) -> Option<&WallpaperMetadata> {
         self.history.get(self.current_history_index)
     }
