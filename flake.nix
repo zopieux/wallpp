@@ -80,6 +80,11 @@
               "wallpp"
             ];
             nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = with pkgs; [
+              libxcb
+              libxrandr
+              wayland
+            ];
           };
 
           wallpp = pkgs.symlinkJoin {
@@ -89,7 +94,8 @@
             postBuild = ''
               wrapProgram $out/bin/wallpp \
                 --prefix XDG_DATA_DIRS : "$out/share" \
-                --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.procps ]}"
+                --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.procps ]}" \
+                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (with pkgs; [ libxcb libxrandr wayland ])}"
             '';
             meta.mainProgram = "wallpp";
           };
@@ -125,8 +131,12 @@
               pkg-config
               procps
               jq
+              libxcb
+              libxrandr
+              wayland
             ];
             shellHook = ''
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (with pkgs; [ libxcb libxrandr wayland ])}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               TARGET_DIR="''${CARGO_TARGET_DIR:-$(cargo metadata --format-version 1 --no-deps 2>/dev/null | jq -r .target_directory 2>/dev/null || echo "$PWD/target")}"
               export WALLPP_PROVIDERS_DIR="$TARGET_DIR/wasm32-wasip2/debug:$TARGET_DIR/wasm32-wasip2/release"
             '';

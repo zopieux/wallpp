@@ -134,6 +134,10 @@ fn default_prefetch_count() -> usize {
     5
 }
 
+fn default_min_display_percentage() -> u32 {
+    100
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagerConfig {
     #[serde(default)]
@@ -154,8 +158,20 @@ pub struct ManagerConfig {
     #[serde(default)]
     pub refresh_strategy: RefreshStrategy,
 
-    #[serde(default, alias = "source_selection_strategy", alias = "selection_strategy")]
+    #[serde(
+        default,
+        alias = "source_selection_strategy",
+        alias = "selection_strategy"
+    )]
     pub source_strategy: SourceStrategy,
+
+    #[serde(
+        default = "default_min_display_percentage",
+        alias = "min_percentage_of_biggest_display",
+        alias = "min_percentage_display",
+        alias = "min_display_percent"
+    )]
+    pub min_display_percentage: u32,
 }
 
 impl Default for ManagerConfig {
@@ -168,6 +184,7 @@ impl Default for ManagerConfig {
             refresh_at_boot: true,
             refresh_strategy: RefreshStrategy::default(),
             source_strategy: SourceStrategy::default(),
+            min_display_percentage: default_min_display_percentage(),
         }
     }
 }
