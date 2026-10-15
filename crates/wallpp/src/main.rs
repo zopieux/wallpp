@@ -5,6 +5,7 @@ use std::collections::HashMap;
 mod cache;
 mod config;
 mod provider;
+mod wallpaper;
 
 use cache::CacheManager;
 use config::AppConfig;
@@ -25,8 +26,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Pick the next wallpaper and download it (default)
+    /// Pick the next wallpaper, download it, and set it on the system (default)
     Next {
+        #[arg(short, long)]
+        source: Option<String>,
+    },
+    /// Preview the next wallpaper by downloading and printing info without setting
+    Preview {
         #[arg(short, long)]
         source: Option<String>,
     },
@@ -49,7 +55,10 @@ async fn main() -> Result<()> {
     let cache_mgr = CacheManager::new().context("Failed to initialize cache manager")?;
     let provider_mgr = ProviderManager::new().await.context("Failed to initialize provider manager")?;
 
-    match cli.command.unwrap_or(Commands::Next { source: None }) {
+    let cmd = cli.command.unwrap_or(Commands::Next { source: None });
+    let is_preview = matches!(cmd, Commands::Preview { .. });
+
+    match cmd {
         Commands::SearchPaths => {
             println!("Provider search paths:");
             for dir in ProviderManager::search_dirs() {
@@ -124,7 +133,7 @@ async fn main() -> Result<()> {
                 println!();
             }
         }
-        Commands::Next { source } => {
+        Commands::Next { source } | Commands::Preview { source } => {
             let app_cfg = AppConfig::load_or_default()?;
             let sources = get_active_sources(&app_cfg, source.as_deref(), &provider_mgr.providers);
 
@@ -132,8 +141,13 @@ async fn main() -> Result<()> {
                 anyhow::bail!("No matching sources found.");
             }
 
-            // Pick first source (or round-robin / random)
-            let src = &sources[0];
+            // Pick a random configured source (pseudo-random without external deps)
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let idx = (seed as usize) % sources.len();
+            let src = &sources[idx];
 
             let wit_cfg = config::toml_to_wit_config(
                 src.options,
@@ -174,6 +188,7 @@ async fn main() -> Result<()> {
             };
 
             println!("\n=== Selected Wallpaper ===");
+            println!("Source:      {} [{}]", src.name, src.provider.name);
             if let Some(ref t) = selected.title {
                 println!("Title:       {}", t);
             }
@@ -187,7 +202,15 @@ async fn main() -> Result<()> {
                 println!("Source URL:  {}", s);
             }
             println!("Cache path:  {}", cached_path.display());
-            println!("(Wallpaper rotation applied - printing only as requested)");
+
+            if is_preview {
+                println!("(Preview mode - wallpaper not set)");
+            } else {
+                println!("[Applying] Setting desktop wallpaper...");
+                wallpaper::set_wallpaper(&cached_path)
+                    .context("Failed to set desktop wallpaper")?;
+                println!("[Success] Wallpaper set successfully!");
+            }
         }
     }
 

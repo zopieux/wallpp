@@ -137,7 +137,7 @@ impl Guest for RedditProvider {
                     ]),
                     multiple: false,
                     required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Choice("hot".to_string()))),
+                    default: Some(ConfigValue::One(ScalarValue::Choice("top".to_string()))),
                 },
                 OptionSpec {
                     key: "time".to_string(),
@@ -163,7 +163,7 @@ impl Guest for RedditProvider {
                 },
                 ConfigEntry {
                     key: "sort".to_string(),
-                    value: ConfigValue::One(ScalarValue::Choice("hot".to_string())),
+                    value: ConfigValue::One(ScalarValue::Choice("top".to_string())),
                 },
                 ConfigEntry {
                     key: "time".to_string(),
