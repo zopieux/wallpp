@@ -43,26 +43,21 @@
         };
 
       # Build a wallpp provider crate to a WebAssembly component and
-      # install it as $out/share/wallpp/providers/<name>.wasm — one of
-      # the locations wallpp scans at startup (via XDG_DATA_DIRS), so
-      # a provider package only needs to be installed for wallpp to
-      # pick it up.
+      # install it as $out/share/wallpp/providers/<name>.wasm.
       #
-      # Exposed for third-party provider flakes; e.g.:
+      # Exposed for third-party provider flakes, for example:
       #
       #   packages.${system}.default = wallpp.buildProvider {
       #     inherit system;
-      #     name = "plouf";
+      #     name = "other";
       #     src = ./.;
       #     cargoLock = ./Cargo.lock;
       #   };
       #
       # The provider crate is expected to be named
       # "wallpp-provider-<name>" (override with `crateName`) and to
-      # depend on `wallpp-provider-sdk` — a plain cargo git dependency
-      # on this repository works, cargo auto-discovers the SDK crate
-      # inside it. Git dependencies need their content hash supplied
-      # via `outputHashes` (nix cannot guess it):
+      # depend on `wallpp-provider-sdk`. Git dependencies need their
+      # content hash supplied via `outputHashes` (nix cannot guess it):
       #
       #   outputHashes = {
       #     "wallpp-provider-sdk-0.1.0" = "sha256-…";
@@ -150,7 +145,16 @@
               wrapProgram $out/bin/wallpp \
                 --prefix XDG_DATA_DIRS : "$out/share" \
                 --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.procps ]}" \
-                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (with pkgs; [ libxcb libxrandr wayland ])}"
+                --prefix LD_LIBRARY_PATH : "${
+                  pkgs.lib.makeLibraryPath (
+                    with pkgs;
+                    [
+                      libxcb
+                      libxrandr
+                      wayland
+                    ]
+                  )
+                }"
             '';
             meta.mainProgram = "wallpp";
           };
@@ -193,7 +197,17 @@
               gsettings-desktop-schemas
             ];
             shellHook = ''
-              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (with pkgs; [ libxcb libxrandr wayland gtk4 ])}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export LD_LIBRARY_PATH="${
+                pkgs.lib.makeLibraryPath (
+                  with pkgs;
+                  [
+                    libxcb
+                    libxrandr
+                    wayland
+                    gtk4
+                  ]
+                )
+              }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:$XDG_DATA_DIRS"
               TARGET_DIR="''${CARGO_TARGET_DIR:-$(cargo metadata --format-version 1 --no-deps 2>/dev/null | jq -r .target_directory 2>/dev/null || echo "$PWD/target")}"
               export WALLPP_PROVIDERS_DIR="$TARGET_DIR/wasm32-wasip2/debug:$TARGET_DIR/wasm32-wasip2/release"

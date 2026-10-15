@@ -2,7 +2,69 @@
 
 A minimal wallpaper manager with a sandboxed WASM provider plugin system (`wasm32-wasip2` via Wasmtime).
 
----
+## Developing your own provider
+
+Implement the `Guest` trait from the SDK in a `cdylib` crate named `wallpp-provider-<name>` (`info()`, `list()`, `download()`, `validate-config()`). Depend on the SDK with a cargo git dependency on this repository; cargo locates the SDK crate inside it:
+
+```toml
+[dependencies]
+wallpp-provider-sdk = { git = "https://github.com/zopieux/wallpp", rev = "…" }
+```
+
+Ship it as a flake with one call (see `buildProvider` in `flake.nix`):
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    wallpp.url = "github:zopieux/wallpp";
+  };
+  outputs = { self, nixpkgs, wallpp }:
+    let system = "x86_64-linux"; in {
+      packages.${system}.default = wallpp.buildProvider {
+        inherit system;
+        name = "other";
+        src = ./.;
+        cargoLock = ./Cargo.lock;
+        outputHashes = {
+          "wallpp-provider-sdk-0.1.0" = "sha256-…"; # nix prints the value on first build
+        };
+      };
+    };
+}
+```
+
+During development, point a local wallpp at your build output with `WALLPP_PROVIDERS_DIR=$PWD/target/wasm32-wasip2/debug`.
+
+## Usage with third-party providers
+
+Install the provider package alongside wallpp; both install their `.wasm` files to `$out/share/wallpp/providers/`, which NixOS merges into `XDG_DATA_DIRS`, and wallpp discovers every provider there at startup:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    wallpp.url = "github:zopieux/wallpp";
+    wallpp-other.url = "github:3p/wallpp-other";
+    wallpp-other.inputs.nixpkgs.follows = "nixpkgs";
+    wallpp-other.inputs.wallpp.follows = "wallpp";  # Reuse toolchain.
+  };
+  outputs = { self, nixpkgs, wallpp, wallpp-other, ... }:
+    let system = "x86_64-linux"; in {
+      nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [{
+          environment.systemPackages = [
+            wallpp.packages.${system}.wallpp
+            wallpp-other.packages.${system}.default
+          ];
+        }];
+      };
+    };
+}
+```
+
+Provider names must be unique: discovery keys providers by `info().name` and a duplicate silently replaces the earlier one.
 
 ## Development workflow
 
@@ -19,9 +81,6 @@ Because providers compile as cdylib components for `wasm32-wasip2` while the man
 ```bash
 # Build all providers at once
 cargo build-providers
-
-# Or manually:
-cargo build --workspace --exclude wallpp --exclude wallpp-gtk --target wasm32-wasip2
 
 # Or build in release mode:
 cargo build-providers --release
@@ -46,6 +105,9 @@ cargo run -p wallpp -- preview
 
 # Open the GTK configuration editor (execs the wallpp-gtk binary)
 cargo run -p wallpp -- config
+
+# Inspect the currently set wallpaper (metadata, URL, path)
+cargo run -p wallpp -- info
 
 # Inspect all provider search paths and their status
 cargo run -p wallpp -- search-paths
@@ -76,10 +138,11 @@ cargo run -p wallpp -- next --source nature
 cargo run -p wallpp -- preview --source nature
 ```
 
-## Create a new provider
+## Adding a built-in provider
 
 1. Create a crate under `providers/<name>` with `crate-type = ["cdylib"]`.
 2. Depend on `wallpp-provider-sdk = { path = "../../crates/wallpp-provider-sdk" }` and `wstd`.
-3. Implement the `Guest` trait (`info()`, `list()`, `download()`).
+3. Implement the `Guest` trait (`info()`, `list()`, `download()`, `validate-config()`).
 4. Export the provider via `wallpp_provider_sdk::export!(YourProvider with_types_in wallpp_provider_sdk);`.
-5. Build with `cargo build -p wallpp-provider-<name> --target wasm32-wasip2`.
+5. Add `<name>` to `providerNames` in `flake.nix` so the flake builds it.
+6. Build with `cargo build -p wallpp-provider-<name> --target wasm32-wasip2`.
