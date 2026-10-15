@@ -1,8 +1,6 @@
 use serde::Deserialize;
 use url::Url;
 use wallpp_provider_sdk::*;
-use wstd::http::{Client, Request};
-use wstd::io::AsyncRead;
 use wstd::runtime::block_on;
 
 const USER_AGENT: &str =
@@ -58,127 +56,75 @@ struct ImageSource {
     height: u32,
 }
 
-async fn http_get(
-    url: String,
+async fn fetch(
+    url: &str,
     referer: Option<&str>,
 ) -> Result<(Vec<u8>, Option<String>), ProviderError> {
-    let mut builder = Request::get(&url)
-        .header("user-agent", USER_AGENT)
-        .header("accept", "*/*");
-
-    if let Some(ref_url) = referer {
-        builder = builder.header("referer", ref_url);
+    let mut headers = vec![("user-agent", USER_AGENT), ("accept", "*/*")];
+    if let Some(referer) = referer {
+        headers.push(("referer", referer));
     }
+    http_get(url, &headers, |_| false).await
+}
 
-    let req = builder
-        .body(wstd::io::empty())
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    let mut resp = Client::new()
-        .send(req)
-        .await
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    let status = resp.status();
-    if status.as_u16() == 429 {
-        return Err(ProviderError::RateLimited(None));
+/// Validate a single-choice config entry against its allowed values.
+fn check_choice(entry: &ConfigEntry, allowed: &[&str], label: &str) -> Result<(), ProviderError> {
+    if let ConfigValue::One(ScalarValue::Choice(s)) = &entry.value {
+        if !allowed.contains(&s.as_str()) {
+            return Err(ProviderError::InvalidConfig(format!(
+                "Invalid {} '{}'. Expected one of: {}.",
+                label,
+                s,
+                allowed.join(", ")
+            )));
+        }
     }
-    if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Err(ProviderError::Auth(format!("HTTP {}", status)));
-    }
-    if !status.is_success() {
-        return Err(ProviderError::Network(format!("HTTP {}", status)));
-    }
-
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    let mut body = Vec::new();
-    resp.body_mut()
-        .read_to_end(&mut body)
-        .await
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    Ok((body, content_type))
+    Ok(())
 }
 
 struct RedditProvider;
 
 impl Guest for RedditProvider {
     fn info() -> ProviderInfo {
-        ProviderInfo {
-            name: "reddit".to_string(),
-            label: "Reddit".to_string(),
-            version: "0.1.0".to_string(),
-            options: vec![
-                OptionSpec {
-                    key: "subreddits".to_string(),
-                    label: "Subreddits".to_string(),
-                    description: Some("One subreddit per line.".to_string()),
-                    ty: ScalarType::Text,
-                    multiple: true,
-                    required: true,
-                    default: Some(ConfigValue::Many(vec![ScalarValue::Text(
-                        "wallpapers".to_string(),
-                    )])),
-                },
-                OptionSpec {
-                    key: "sort".to_string(),
-                    label: "Sort method".to_string(),
-                    description: Some("Sorting method".to_string()),
-                    ty: ScalarType::Choice(vec![
-                        "hot".to_string(),
-                        "new".to_string(),
-                        "top".to_string(),
-                    ]),
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Choice("top".to_string()))),
-                },
-                OptionSpec {
-                    key: "time".to_string(),
-                    label: "Top time window".to_string(),
-                    description: Some("Time window when sort is 'top'".to_string()),
-                    ty: ScalarType::Choice(vec![
-                        "hour".to_string(),
-                        "day".to_string(),
-                        "week".to_string(),
-                        "month".to_string(),
-                        "year".to_string(),
-                        "all".to_string(),
-                    ]),
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Choice("week".to_string()))),
-                },
+        provider_info(
+            "reddit",
+            "Reddit",
+            "0.1.0",
+            vec![
+                spec("subreddits", "Subreddits", ScalarType::Text)
+                    .desc("One subreddit per line.")
+                    .multiple()
+                    .required()
+                    .default_texts(&["wallpapers"])
+                    .build(),
+                spec(
+                    "sort",
+                    "Sort method",
+                    ScalarType::Choice(strings(&["hot", "new", "top"])),
+                )
+                .desc("Sorting method")
+                .default_choice("top")
+                .build(),
+                spec(
+                    "time",
+                    "Top time window",
+                    ScalarType::Choice(strings(&["hour", "day", "week", "month", "year", "all"])),
+                )
+                .desc("Time window when sort is 'top'")
+                .default_choice("week")
+                .build(),
             ],
-            default_config: vec![
-                ConfigEntry {
-                    key: "subreddits".to_string(),
-                    value: ConfigValue::Many(vec![ScalarValue::Text("wallpapers".to_string())]),
-                },
-                ConfigEntry {
-                    key: "sort".to_string(),
-                    value: ConfigValue::One(ScalarValue::Choice("top".to_string())),
-                },
-                ConfigEntry {
-                    key: "time".to_string(),
-                    value: ConfigValue::One(ScalarValue::Choice("week".to_string())),
-                },
+            &["subreddits", "sort", "time"],
+            &[
+                "reddtastic.com",
+                "www.reddtastic.com",
+                "*.reddit.com",
+                "reddit.com",
+                "i.redd.it",
+                "preview.redd.it",
+                "external-preview.redd.it",
             ],
-            allowed_hosts: vec![
-                "reddtastic.com".to_string(),
-                "www.reddtastic.com".to_string(),
-                "*.reddit.com".to_string(),
-                "reddit.com".to_string(),
-                "i.redd.it".to_string(),
-                "preview.redd.it".to_string(),
-                "external-preview.redd.it".to_string(),
-            ],
-        }
+        )
     }
 
     fn list(
@@ -224,9 +170,7 @@ impl Guest for RedditProvider {
             .map(|u| u.to_string());
 
         let (bytes, _) =
-            block_on(
-                async move { http_get(api_url.as_str().to_string(), referer.as_deref()).await },
-            )?;
+            block_on(async move { fetch(api_url.as_str(), referer.as_deref()).await })?;
 
         let res: ReddtasticResponse = serde_json::from_slice(&bytes)
             .map_err(|e| ProviderError::Other(format!("Failed to parse JSON: {}", e)))?;
@@ -305,7 +249,7 @@ impl Guest for RedditProvider {
     }
 
     fn download(_cfg: Config, id: String) -> Result<Image, ProviderError> {
-        let (data, ct) = block_on(async move { http_get(id, None).await })?;
+        let (data, ct) = block_on(async move { fetch(&id, None).await })?;
         Ok(Image {
             content_type: ct.unwrap_or_else(|| "image/jpeg".to_string()),
             data,
@@ -382,28 +326,15 @@ impl Guest for RedditProvider {
                     });
                 }
                 "sort" => {
-                    if let ConfigValue::One(ScalarValue::Choice(ref s)) = entry.value {
-                        if !matches!(s.as_str(), "hot" | "new" | "top") {
-                            return Err(ProviderError::InvalidConfig(format!(
-                                "Invalid sort method '{}'. Expected 'hot', 'new', or 'top'.",
-                                s
-                            )));
-                        }
-                    }
+                    check_choice(&entry, &["hot", "new", "top"], "sort method")?;
                     normalized.push(entry);
                 }
                 "time" => {
-                    if let ConfigValue::One(ScalarValue::Choice(ref s)) = entry.value {
-                        if !matches!(
-                            s.as_str(),
-                            "hour" | "day" | "week" | "month" | "year" | "all"
-                        ) {
-                            return Err(ProviderError::InvalidConfig(format!(
-                                "Invalid time window '{}'. Expected 'hour', 'day', 'week', 'month', 'year', or 'all'.",
-                                s
-                            )));
-                        }
-                    }
+                    check_choice(
+                        &entry,
+                        &["hour", "day", "week", "month", "year", "all"],
+                        "time window",
+                    )?;
                     normalized.push(entry);
                 }
                 _ => {

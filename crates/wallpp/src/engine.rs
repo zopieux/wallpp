@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 use crate::cache::CacheManager;
-use crate::config::{self, AppConfig, RefreshStrategy, SourceStrategy};
+use crate::config::{self, AppConfig, RefreshStrategy};
 use crate::monitor;
 use crate::prefetch;
 use crate::provider::ProviderManager;
@@ -15,9 +15,11 @@ pub fn collect_keep_paths(state: &State) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for h in state.history.iter().take(20) {
         paths.push(h.cache_path.clone());
+        paths.push(crate::cache::thumbnail_path_for_original(&h.cache_path));
     }
     for p in &state.prefetch_queue {
         paths.push(p.cache_path.clone());
+        paths.push(crate::cache::thumbnail_path_for_original(&p.cache_path));
     }
     paths
 }
@@ -198,31 +200,11 @@ impl<'a> WallpaperEngine<'a> {
             anyhow::bail!("No matching sources found.");
         }
 
-        let idx = match self.app_cfg.manager.source_strategy {
-            SourceStrategy::Random => {
-                let seed = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                (seed as usize) % sources.len()
-            }
-            SourceStrategy::RoundRobin => {
-                if let Some(last) = self.state.last_source() {
-                    if let Some(pos) = sources.iter().position(|s| {
-                        s.display_label.eq_ignore_ascii_case(last)
-                            || s.provider.name.eq_ignore_ascii_case(last)
-                    }) {
-                        (pos + 1) % sources.len()
-                    } else {
-                        // Edge case: source was removed or disabled between runs.
-                        // Gracefully start over from the first available source.
-                        0
-                    }
-                } else {
-                    0
-                }
-            }
-        };
+        let idx = crate::sources::pick_source_index(
+            &sources,
+            self.app_cfg.manager.source_strategy,
+            self.state.last_source(),
+        );
 
         let src = &sources[idx];
 
@@ -245,24 +227,14 @@ impl<'a> WallpaperEngine<'a> {
         let selected = &page.items[0];
         let id = &selected.id;
 
-        let cached_path = match self.cache_mgr.get_cached_image(id) {
-            Some(p) => {
-                println!("[Cache hit] Image already cached at {:?}", p);
-                p
-            }
-            None => {
-                println!("[Downloading] Fetching image from provider...");
-                let img = self
-                    .provider_mgr
-                    .query_download(&src.provider.name, wit_cfg, id)
-                    .await?;
-                let p = self
-                    .cache_mgr
-                    .store_image(id, &img.content_type, &img.data)?;
-                println!("[Downloaded] Stored {} bytes at {:?}", img.data.len(), p);
-                p
-            }
-        };
+        let cached = prefetch::cached_image(
+            self.provider_mgr,
+            self.cache_mgr,
+            &src.provider.name,
+            &wit_cfg,
+            id,
+        )
+        .await?;
 
         Ok(WallpaperMetadata {
             provider: src.provider.name.clone(),
@@ -270,7 +242,7 @@ impl<'a> WallpaperEngine<'a> {
             changed_at: current_utc_timestamp(),
             opaque_id: id.clone(),
             source_url: selected.source_url.clone(),
-            cache_path: cached_path,
+            cache_path: cached.original_path,
             title: selected.title.clone(),
             author: selected.author.clone(),
             width: selected.width,

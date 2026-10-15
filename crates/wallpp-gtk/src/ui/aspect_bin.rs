@@ -1,21 +1,28 @@
+//! Single-child bin with a fixed aspect ratio (height-for-width):
+//! the height derives from the allocated width exactly like the
+//! timeline grid's cells, and the child fills the whole allocation.
+//! The child is never measured, so a GtkPicture's intrinsic image
+//! size cannot leak into the parent's layout (stock containers
+//! forward it, which stretched the landing inspector's preview to
+//! whatever aspect the wallpaper file happened to have instead of
+//! the monitor's).
+
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use gtk4::{Allocation, Orientation, SizeRequestMode, Widget};
+use gtk4::{glib, Allocation, Orientation, SizeRequestMode, Widget};
 
 mod imp {
     use super::*;
-    use std::cell::{Cell, RefCell};
+    use std::cell::Cell;
 
     pub struct AspectBin {
         pub aspect: Cell<f64>,
-        pub child: RefCell<Option<Widget>>,
     }
 
     impl Default for AspectBin {
         fn default() -> Self {
             Self {
                 aspect: Cell::new(16.0 / 9.0),
-                child: RefCell::new(None),
             }
         }
     }
@@ -29,7 +36,6 @@ mod imp {
 
     impl ObjectImpl for AspectBin {
         fn dispose(&self) {
-            self.child.borrow_mut().take();
             while let Some(child) = self.obj().first_child() {
                 child.unparent();
             }
@@ -42,50 +48,30 @@ mod imp {
         }
 
         fn measure(&self, orientation: Orientation, for_size: i32) -> (i32, i32, i32, i32) {
-            let aspect = self.aspect.get().max(0.01);
             match orientation {
-                Orientation::Horizontal => {
-                    let min_w = 60;
-                    let nat_w = if for_size > 0 {
-                        (for_size as f64 * aspect).round() as i32
-                    } else {
-                        160
-                    };
-                    (min_w, nat_w, -1, -1)
-                }
+                // Never measure the child: its natural size (a
+                // picture's intrinsic image size) must not widen
+                // the inspector beyond its share of the window.
+                Orientation::Horizontal => (0, 0, -1, -1),
                 _ => {
-                    if for_size > 0 {
-                        let h = (for_size as f64 / aspect).round() as i32;
-                        (h, h, -1, -1)
-                    } else {
-                        let min_h = (60.0 / aspect).round() as i32;
-                        (min_h, min_h, -1, -1)
-                    }
+                    let width = if for_size > 0 { for_size } else { 640 };
+                    let h = (width as f64 / self.aspect.get()).round() as i32;
+                    (h, h, -1, -1)
                 }
             }
         }
 
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
-            if let Some(ref child) = *self.child.borrow() {
-                if child.should_layout() {
-                    let aspect = self.aspect.get().max(0.01);
-                    let target_h = (width as f64 / aspect).round() as i32;
-                    let (y, h) = if target_h <= height {
-                        ((height - target_h) / 2, target_h)
-                    } else {
-                        (0, height)
-                    };
-                    child.measure(Orientation::Horizontal, -1);
-                    child.size_allocate(&Allocation::new(0, y, width, h), baseline);
-                }
+            if let Some(child) = self.obj().first_child() {
+                child.size_allocate(&Allocation::new(0, 0, width, height), baseline);
             }
         }
     }
 }
 
 glib::wrapper! {
-    /// Container widget that enforces a fixed aspect ratio for its child:
-    /// child width spans the container width, and child height derives from aspect ratio.
+    /// A bin whose height follows its width at a fixed aspect ratio,
+    /// so its child (cover-fit) shows exactly the monitor's aspect.
     pub struct AspectBin(ObjectSubclass<imp::AspectBin>)
         @extends Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget;
@@ -98,20 +84,15 @@ impl AspectBin {
         bin
     }
 
-    pub fn set_child(&self, child: Option<&impl IsA<Widget>>) {
-        let imp = self.imp();
-        if let Some(old) = imp.child.borrow_mut().take() {
-            old.unparent();
-        }
-        if let Some(new_child) = child {
-            new_child.set_parent(self);
-            *imp.child.borrow_mut() = Some(new_child.clone().upcast());
-        }
-        self.queue_resize();
+    pub fn set_child(&self, child: &impl IsA<Widget>) {
+        child.set_parent(self);
     }
 
-    #[allow(dead_code)]
-    pub fn child(&self) -> Option<Widget> {
-        self.imp().child.borrow().clone()
+    pub fn set_aspect(&self, aspect: f64) {
+        let imp = self.imp();
+        if (imp.aspect.get() - aspect).abs() > f64::EPSILON {
+            imp.aspect.set(aspect);
+            self.queue_resize();
+        }
     }
 }

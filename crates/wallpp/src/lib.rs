@@ -4,6 +4,7 @@ pub mod engine;
 #[cfg(feature = "sandbox-proxy")]
 pub mod http_proxy;
 pub mod monitor;
+pub mod paths;
 pub mod prefetch;
 pub mod provider;
 pub mod sources;

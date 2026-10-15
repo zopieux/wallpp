@@ -109,13 +109,7 @@ impl ProviderManager {
         }
 
         // User XDG data directory (~/.local/share/wallpp/providers).
-        let user_data = std::env::var("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                PathBuf::from(home).join(".local").join("share")
-            });
-        dirs.push(user_data.join("wallpp").join("providers"));
+        dirs.push(crate::paths::data_dir().join("wallpp").join("providers"));
 
         // System XDG directories.
         let system_data = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| {
@@ -150,21 +144,37 @@ impl ProviderManager {
         Ok(())
     }
 
-    async fn load_info_from_file(&mut self, path: &Path) -> Result<()> {
-        let component = Component::from_file(&self.engine, path)?;
+    fn discovered(&self, provider_name: &str) -> Result<&DiscoveredProvider> {
+        self.providers
+            .get(provider_name)
+            .with_context(|| format!("Provider '{}' not found in search paths", provider_name))
+    }
+
+    async fn instantiate(
+        &self,
+        component: &Component,
+        memory_mb: usize,
+    ) -> Result<(Store<HostState>, WallpaperProvider)> {
         let mut store = Store::new(
             &self.engine,
             HostState {
                 wasi: WasiCtxBuilder::new().build(),
                 http: WasiHttpCtx::new(),
                 table: ResourceTable::new(),
-                limits: StoreLimitsBuilder::new().memory_size(64 << 20).build(),
+                limits: StoreLimitsBuilder::new()
+                    .memory_size(memory_mb << 20)
+                    .build(),
             },
         );
         store.limiter(|s| &mut s.limits);
-
         let instance =
-            WallpaperProvider::instantiate_async(&mut store, &component, &self.linker).await?;
+            WallpaperProvider::instantiate_async(&mut store, component, &self.linker).await?;
+        Ok((store, instance))
+    }
+
+    async fn load_info_from_file(&mut self, path: &Path) -> Result<()> {
+        let component = Component::from_file(&self.engine, path)?;
+        let (mut store, instance) = self.instantiate(&component, 64).await?;
         let guest = instance.wallpp_provider_provider();
         let info = guest.call_info(&mut store).await?;
 
@@ -189,25 +199,8 @@ impl ProviderManager {
         cursor: Option<String>,
         filter: FilterCriteria,
     ) -> Result<Page> {
-        let discovered = self
-            .providers
-            .get(provider_name)
-            .with_context(|| format!("Provider '{}' not found in search paths", provider_name))?;
-
-        let component = &discovered.component;
-        let mut store = Store::new(
-            &self.engine,
-            HostState {
-                wasi: WasiCtxBuilder::new().build(),
-                http: WasiHttpCtx::new(),
-                table: ResourceTable::new(),
-                limits: StoreLimitsBuilder::new().memory_size(128 << 20).build(),
-            },
-        );
-        store.limiter(|s| &mut s.limits);
-
-        let instance =
-            WallpaperProvider::instantiate_async(&mut store, component, &self.linker).await?;
+        let discovered = self.discovered(provider_name)?;
+        let (mut store, instance) = self.instantiate(&discovered.component, 128).await?;
         let guest = instance.wallpp_provider_provider();
         let mut page = guest
             .call_list(&mut store, &cfg, limit, cursor.as_deref(), filter)
@@ -226,25 +219,8 @@ impl ProviderManager {
         cfg: WitConfig,
         id: &str,
     ) -> Result<Image> {
-        let discovered = self
-            .providers
-            .get(provider_name)
-            .with_context(|| format!("Provider '{}' not found in search paths", provider_name))?;
-
-        let component = &discovered.component;
-        let mut store = Store::new(
-            &self.engine,
-            HostState {
-                wasi: WasiCtxBuilder::new().build(),
-                http: WasiHttpCtx::new(),
-                table: ResourceTable::new(),
-                limits: StoreLimitsBuilder::new().memory_size(128 << 20).build(),
-            },
-        );
-        store.limiter(|s| &mut s.limits);
-
-        let instance =
-            WallpaperProvider::instantiate_async(&mut store, component, &self.linker).await?;
+        let discovered = self.discovered(provider_name)?;
+        let (mut store, instance) = self.instantiate(&discovered.component, 128).await?;
         let guest = instance.wallpp_provider_provider();
         let image = guest
             .call_download(&mut store, &cfg, id)
@@ -255,25 +231,8 @@ impl ProviderManager {
     }
 
     pub async fn validate_config(&self, provider_name: &str, cfg: WitConfig) -> Result<WitConfig> {
-        let discovered = self
-            .providers
-            .get(provider_name)
-            .with_context(|| format!("Provider '{}' not found in search paths", provider_name))?;
-
-        let component = &discovered.component;
-        let mut store = Store::new(
-            &self.engine,
-            HostState {
-                wasi: WasiCtxBuilder::new().build(),
-                http: WasiHttpCtx::new(),
-                table: ResourceTable::new(),
-                limits: StoreLimitsBuilder::new().memory_size(64 << 20).build(),
-            },
-        );
-        store.limiter(|s| &mut s.limits);
-
-        let instance =
-            WallpaperProvider::instantiate_async(&mut store, component, &self.linker).await?;
+        let discovered = self.discovered(provider_name)?;
+        let (mut store, instance) = self.instantiate(&discovered.component, 64).await?;
         let guest = instance.wallpp_provider_provider();
         let validated = guest
             .call_validate_config(&mut store, &cfg)

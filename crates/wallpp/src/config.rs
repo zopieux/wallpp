@@ -68,44 +68,20 @@ impl<'de> Deserialize<'de> for ByteSize {
     where
         D: serde::Deserializer<'de>,
     {
-        struct ByteSizeVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for ByteSizeVisitor {
-            type Value = ByteSize;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str(
-                    "a byte size integer or human-readable string like '1G', '500M', '2GiB'",
-                )
-            }
-
-            fn visit_i64<E>(self, v: i64) -> Result<ByteSize, E>
-            where
-                E: serde::de::Error,
-            {
-                if v < 0 {
-                    Err(E::custom("byte size cannot be negative"))
-                } else {
-                    Ok(ByteSize(v as u64))
-                }
-            }
-
-            fn visit_u64<E>(self, v: u64) -> Result<ByteSize, E>
-            where
-                E: serde::de::Error,
-            {
-                Ok(ByteSize(v))
-            }
-
-            fn visit_str<E>(self, v: &str) -> Result<ByteSize, E>
-            where
-                E: serde::de::Error,
-            {
-                parse_byte_size(v).map(ByteSize).map_err(E::custom)
-            }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Input {
+            Number(i64),
+            Text(String),
         }
 
-        deserializer.deserialize_any(ByteSizeVisitor)
+        match Input::deserialize(deserializer)? {
+            Input::Number(value) if value >= 0 => Ok(ByteSize(value as u64)),
+            Input::Number(_) => Err(serde::de::Error::custom("byte size cannot be negative")),
+            Input::Text(value) => parse_byte_size(&value)
+                .map(ByteSize)
+                .map_err(serde::de::Error::custom),
+        }
     }
 }
 
@@ -392,13 +368,9 @@ impl AppConfig {
         if let Ok(p) = std::env::var("WALLPP_CONFIG") {
             return PathBuf::from(p);
         }
-        let base = std::env::var("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                PathBuf::from(home).join(".config")
-            });
-        base.join("wallpp").join("config.toml")
+        crate::paths::config_dir()
+            .join("wallpp")
+            .join("config.toml")
     }
 
     /// Loads the configuration file directly without layering environment variables.

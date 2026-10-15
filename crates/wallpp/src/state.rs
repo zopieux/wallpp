@@ -76,13 +76,7 @@ impl State {
         if let Ok(p) = std::env::var("WALLPP_STATE") {
             return PathBuf::from(p);
         }
-        let base = std::env::var("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                PathBuf::from(home).join(".local").join("state")
-            });
-        base.join("wallpp").join("state.bin")
+        crate::paths::state_dir().join("wallpp").join("state.bin")
     }
 
     pub fn load_or_default() -> Self {

@@ -1,3 +1,8 @@
+//! Tokio backend: owns config/state/providers and does all network,
+//! wasm, cache, and file work off the GTK thread. The UI only sends
+//! `Action`s and renders `UiUpdate`s.
+
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -7,52 +12,38 @@ use wallpp::engine::WallpaperEngine;
 use wallpp::prefetch;
 use wallpp::provider::{DiscoveredProvider, ProviderManager};
 use wallpp::state::{State, WallpaperMetadata};
+use wallpp::wallpp::provider::types::ConfigEntry;
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum Action {
-    Next,
-    Previous,
-    SelectHistory(usize),
-    SelectPlanned(usize),
-    RefillQueue,
+    ApplyPlanned(usize),
+    ApplyHistory(usize),
     UpdateConfig(AppConfig),
-    RefillQueueAndRefresh,
-    ValidateSourceConfig { source: SourceConfig },
-    FetchSourcePreviews { source: SourceConfig, count: usize },
+    /// Clear the planned queue and refill it (settings changed).
+    RefreshQueue,
+    Validate(SourceConfig),
+    Previews(SourceConfig, usize),
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
-pub struct SourcePreviewItem {
-    pub id: String,
+pub struct PreviewItem {
     pub title: Option<String>,
     pub author: Option<String>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub cache_path: PathBuf,
+    /// Reduced-resolution copy used by the source preview grid.
+    pub thumbnail_path: PathBuf,
 }
 
 #[derive(Clone, Debug)]
 pub enum UiUpdate {
-    StateUpdated {
-        state: State,
-        status: String,
-    },
-    ProvidersDiscovered(Vec<DiscoveredProvider>),
-    SourceConfigNormalized {
-        normalized: Vec<wallpp::wallpp::provider::types::ConfigEntry>,
-    },
-    SourcePreviews {
-        #[allow(dead_code)]
-        provider: String,
-        items: Vec<SourcePreviewItem>,
-    },
-    SourcePreviewError(String),
-    StatusMessage(String),
-    Error(String),
+    State(State),
+    /// A planned-queue refill started/finished (show/hide a spinner).
+    Refreshing(bool),
+    Providers(Vec<DiscoveredProvider>),
+    Normalized(Vec<ConfigEntry>),
+    Previews(Result<Vec<PreviewItem>, String>),
 }
 
+#[derive(Clone)]
 pub struct BackendHandle {
     sender: mpsc::UnboundedSender<Action>,
 }
@@ -63,429 +54,232 @@ impl BackendHandle {
     }
 }
 
-/// Refill the prefetch queue, publishing a `StateUpdated` update after
-/// every newly planned wallpaper so the UI shows planned wallpapers as
-/// they arrive rather than only when the whole queue is filled.
-async fn refill_with_progress(
-    state: &mut State,
-    refill_cfg: &AppConfig,
-    provider_mgr: &ProviderManager,
-    cache_mgr: &CacheManager,
-    ui_sender: &async_channel::Sender<UiUpdate>,
-) {
-    let progress_sender = ui_sender.clone();
-    let mut on_progress = move |st: &State| {
-        let _ = progress_sender.try_send(UiUpdate::StateUpdated {
-            state: st.clone(),
-            status: format!(
-                "Pre-fetching planned wallpapers... ({} ready)",
-                st.prefetch_queue.len()
-            ),
-        });
-    };
-    let _ = prefetch::refill_prefetch_queue(
-        state,
-        refill_cfg,
-        provider_mgr,
-        cache_mgr,
-        &mut on_progress,
-    )
-    .await;
+type UiSender = async_channel::Sender<UiUpdate>;
+
+struct Backend {
+    cfg: AppConfig,
+    state: State,
+    cache: Arc<CacheManager>,
+    providers: Arc<ProviderManager>,
+    ui: UiSender,
 }
 
-pub fn start_backend(
-    initial_config: AppConfig,
-    initial_state: State,
-    ui_sender: async_channel::Sender<UiUpdate>,
-) -> BackendHandle {
-    let (action_tx, mut action_rx) = mpsc::unbounded_channel::<Action>();
+impl Backend {
+    fn publish(&self) {
+        let _ = self.ui.try_send(UiUpdate::State(self.state.clone()));
+    }
+
+    fn queue_cfg(&self) -> AppConfig {
+        let mut cfg = self.cfg.clone();
+        cfg.manager.prefetch_count = cfg.manager.prefetch_count.max(5);
+        cfg
+    }
+
+    /// Generate any missing grid thumbnails for wallpapers already in
+    /// state (e.g. cached before thumbnail support existed).
+    async fn ensure_state_thumbnails(&self) {
+        let mut seen = HashSet::new();
+        let paths: Vec<PathBuf> = self
+            .state
+            .history
+            .iter()
+            .map(|item| &item.cache_path)
+            .chain(
+                self.state
+                    .prefetch_queue
+                    .iter()
+                    .map(|item| &item.cache_path),
+            )
+            .filter(|path| seen.insert((*path).clone()))
+            .cloned()
+            .collect();
+        for path in paths {
+            if self.cache.thumbnail_path(&path).is_file() {
+                continue;
+            }
+            let cache = Arc::clone(&self.cache);
+            let _ = tokio::task::spawn_blocking(move || cache.ensure_thumbnail(&path)).await;
+        }
+    }
+
+    /// Refill the planned queue, publishing state after each new item.
+    async fn refill(&mut self) {
+        let _ = self.ui.try_send(UiUpdate::Refreshing(true));
+        self.ensure_state_thumbnails().await;
+        let cfg = self.queue_cfg();
+        let ui = self.ui.clone();
+        let mut progress = move |st: &State| {
+            let _ = ui.try_send(UiUpdate::State(st.clone()));
+        };
+        let _ = prefetch::refill_prefetch_queue(
+            &mut self.state,
+            &cfg,
+            &self.providers,
+            &self.cache,
+            &mut progress,
+        )
+        .await;
+        let _ = self.state.save();
+        self.publish();
+        let _ = self.ui.try_send(UiUpdate::Refreshing(false));
+    }
+
+    async fn apply(&mut self, meta: WallpaperMetadata, is_new: bool) {
+        let mut engine =
+            WallpaperEngine::new(&self.cfg, &mut self.state, &self.cache, &self.providers);
+        if engine.set_and_record_wallpaper(meta, is_new).await.is_ok() && is_new {
+            self.refill().await;
+        } else {
+            let _ = self.state.save();
+            self.publish();
+        }
+    }
+
+    /// Convert a source to its provider-validated WIT config, publishing
+    /// the normalized form so the UI can show canonical values.
+    async fn validated_config(
+        &self,
+        source: &SourceConfig,
+    ) -> Result<wallpp::wallpp::provider::types::Config, String> {
+        let prov = self
+            .providers
+            .providers
+            .get(&source.provider)
+            .ok_or_else(|| format!("Provider '{}' not found", source.provider))?;
+        let wit_cfg = source.to_wit_config(&prov.info.options, &prov.info.default_config);
+        let valid = self
+            .providers
+            .validate_config(&source.provider, wit_cfg)
+            .await
+            .map_err(|e| format!("Config error: {e}"))?;
+        let _ = self.ui.try_send(UiUpdate::Normalized(valid.clone()));
+        Ok(valid)
+    }
+
+    async fn previews(&self, source: SourceConfig, count: usize) {
+        let send = |u: UiUpdate| {
+            let _ = self.ui.try_send(u);
+        };
+        let wit_cfg = match self.validated_config(&source).await {
+            Ok(c) => c,
+            Err(e) => {
+                send(UiUpdate::Previews(Err(e)));
+                return;
+            }
+        };
+        let filter =
+            wallpp::monitor::compute_filter_criteria(self.cfg.manager.min_display_percentage);
+        let page = match self
+            .providers
+            .query_list(
+                &source.provider,
+                wit_cfg.clone(),
+                count as u32,
+                None,
+                filter,
+            )
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                send(UiUpdate::Previews(Err(format!("Query failed: {e}"))));
+                return;
+            }
+        };
+        let mut items = Vec::new();
+        for item in page.items.into_iter().take(count) {
+            if let Ok(cached) = prefetch::cached_image(
+                &self.providers,
+                &self.cache,
+                &source.provider,
+                &wit_cfg,
+                &item.id,
+            )
+            .await
+            {
+                items.push(PreviewItem {
+                    title: item.title,
+                    author: item.author,
+                    thumbnail_path: cached.thumbnail_path,
+                });
+            }
+        }
+        if items.is_empty() {
+            send(UiUpdate::Previews(Err(
+                "No wallpapers found matching criteria".into(),
+            )));
+        } else {
+            send(UiUpdate::Previews(Ok(items)));
+        }
+    }
+}
+
+pub fn start_backend(cfg: AppConfig, state: State, ui: UiSender) -> BackendHandle {
+    let (sender, mut rx) = mpsc::unbounded_channel::<Action>();
+    let handle = BackendHandle { sender };
 
     tokio::spawn(async move {
-        let mut app_cfg = initial_config;
-        let mut state = initial_state;
-
-        let cache_mgr = match CacheManager::new() {
+        let cache = match CacheManager::new() {
             Ok(c) => Arc::new(c),
             Err(e) => {
-                let _ = ui_sender
-                    .send(UiUpdate::Error(format!("Failed to init cache: {}", e)))
-                    .await;
+                eprintln!("wallpp-gtk: failed to init cache: {e}");
                 return;
             }
         };
-
-        let _ = ui_sender
-            .send(UiUpdate::StatusMessage("Discovering providers...".into()))
-            .await;
-        let provider_mgr = match ProviderManager::new().await {
+        let providers = match ProviderManager::new().await {
             Ok(p) => Arc::new(p),
             Err(e) => {
-                let _ = ui_sender
-                    .send(UiUpdate::Error(format!("Failed to init providers: {}", e)))
-                    .await;
+                eprintln!("wallpp-gtk: failed to init providers: {e}");
                 return;
             }
         };
+        let _ = ui.try_send(UiUpdate::Providers(
+            providers.providers.values().cloned().collect(),
+        ));
 
-        let prov_list: Vec<DiscoveredProvider> = provider_mgr.providers.values().cloned().collect();
-        let _ = ui_sender
-            .send(UiUpdate::ProvidersDiscovered(prov_list))
-            .await;
-
-        if state.prefetch_queue.len() < 5 {
-            let _ = ui_sender
-                .send(UiUpdate::StatusMessage(
-                    "Pre-fetching planned wallpapers...".into(),
-                ))
-                .await;
-            let mut refill_cfg = app_cfg.clone();
-            if refill_cfg.manager.prefetch_count < 5 {
-                refill_cfg.manager.prefetch_count = 5;
-            }
-            refill_with_progress(
-                &mut state,
-                &refill_cfg,
-                &provider_mgr,
-                &cache_mgr,
-                &ui_sender,
-            )
-            .await;
-            let _ = state.save();
+        let mut backend = Backend {
+            cfg,
+            state,
+            cache,
+            providers,
+            ui,
+        };
+        if backend.state.prefetch_queue.len() < 5 {
+            backend.refill().await;
+        } else {
+            backend.ensure_state_thumbnails().await;
+            backend.publish();
         }
 
-        let _ = ui_sender
-            .send(UiUpdate::StateUpdated {
-                state: state.clone(),
-                status: "Ready".into(),
-            })
-            .await;
-
-        while let Some(action) = action_rx.recv().await {
+        while let Some(action) = rx.recv().await {
             match action {
-                Action::Next => {
-                    let _ = ui_sender
-                        .send(UiUpdate::StatusMessage(
-                            "Advancing to next wallpaper...".into(),
-                        ))
-                        .await;
-                    let mut engine =
-                        WallpaperEngine::new(&app_cfg, &mut state, &cache_mgr, &provider_mgr);
-                    match engine.transition_next(None, false).await {
-                        Ok(()) => {
-                            let mut refill_cfg = app_cfg.clone();
-                            if refill_cfg.manager.prefetch_count < 5 {
-                                refill_cfg.manager.prefetch_count = 5;
-                            }
-                            refill_with_progress(
-                                &mut state,
-                                &refill_cfg,
-                                &provider_mgr,
-                                &cache_mgr,
-                                &ui_sender,
-                            )
-                            .await;
-                            let _ = state.save();
-                            let _ = ui_sender
-                                .send(UiUpdate::StateUpdated {
-                                    state: state.clone(),
-                                    status: "Next wallpaper applied".into(),
-                                })
-                                .await;
-                        }
-                        Err(e) => {
-                            let _ = ui_sender
-                                .send(UiUpdate::Error(format!("Failed to advance: {}", e)))
-                                .await;
-                        }
+                Action::ApplyPlanned(idx) => {
+                    if idx < backend.state.prefetch_queue.len() {
+                        let meta = backend.state.prefetch_queue.remove(idx).into();
+                        backend.apply(meta, true).await;
                     }
                 }
-                Action::Previous => {
-                    let _ = ui_sender
-                        .send(UiUpdate::StatusMessage(
-                            "Restoring previous wallpaper...".into(),
-                        ))
-                        .await;
-                    let mut engine =
-                        WallpaperEngine::new(&app_cfg, &mut state, &cache_mgr, &provider_mgr);
-                    match engine.transition_previous().await {
-                        Ok(()) => {
-                            let _ = ui_sender
-                                .send(UiUpdate::StateUpdated {
-                                    state: state.clone(),
-                                    status: "Previous wallpaper restored".into(),
-                                })
-                                .await;
-                        }
-                        Err(e) => {
-                            let _ = ui_sender
-                                .send(UiUpdate::Error(format!(
-                                    "Failed to restore previous: {}",
-                                    e
-                                )))
-                                .await;
-                        }
+                Action::ApplyHistory(idx) => {
+                    if let Some(meta) = backend.state.history.get(idx).cloned() {
+                        backend.state.current_history_index = idx;
+                        backend.apply(meta, false).await;
                     }
-                }
-                Action::SelectHistory(idx) => {
-                    if let Some(meta) = state.history.get(idx).cloned() {
-                        let _ = ui_sender
-                            .send(UiUpdate::StatusMessage(
-                                "Restoring historical wallpaper...".into(),
-                            ))
-                            .await;
-                        state.current_history_index = idx;
-                        let mut engine =
-                            WallpaperEngine::new(&app_cfg, &mut state, &cache_mgr, &provider_mgr);
-                        match engine.set_and_record_wallpaper(meta, false).await {
-                            Ok(()) => {
-                                let _ = ui_sender
-                                    .send(UiUpdate::StateUpdated {
-                                        state: state.clone(),
-                                        status: "Wallpaper restored from history".into(),
-                                    })
-                                    .await;
-                            }
-                            Err(e) => {
-                                let _ = ui_sender
-                                    .send(UiUpdate::Error(format!(
-                                        "Failed to set wallpaper: {}",
-                                        e
-                                    )))
-                                    .await;
-                            }
-                        }
-                    }
-                }
-                Action::SelectPlanned(idx) => {
-                    if idx < state.prefetch_queue.len() {
-                        let _ = ui_sender
-                            .send(UiUpdate::StatusMessage(
-                                "Applying planned wallpaper...".into(),
-                            ))
-                            .await;
-                        let prefetched = state.prefetch_queue.remove(idx);
-                        let meta = WallpaperMetadata::from(prefetched);
-                        let mut engine =
-                            WallpaperEngine::new(&app_cfg, &mut state, &cache_mgr, &provider_mgr);
-                        match engine.set_and_record_wallpaper(meta, true).await {
-                            Ok(()) => {
-                                let mut refill_cfg = app_cfg.clone();
-                                if refill_cfg.manager.prefetch_count < 5 {
-                                    refill_cfg.manager.prefetch_count = 5;
-                                }
-                                refill_with_progress(
-                                    &mut state,
-                                    &refill_cfg,
-                                    &provider_mgr,
-                                    &cache_mgr,
-                                    &ui_sender,
-                                )
-                                .await;
-                                let _ = state.save();
-                                let _ = ui_sender
-                                    .send(UiUpdate::StateUpdated {
-                                        state: state.clone(),
-                                        status: "Planned wallpaper applied".into(),
-                                    })
-                                    .await;
-                            }
-                            Err(e) => {
-                                let _ = ui_sender
-                                    .send(UiUpdate::Error(format!(
-                                        "Failed to apply planned wallpaper: {}",
-                                        e
-                                    )))
-                                    .await;
-                            }
-                        }
-                    }
-                }
-                Action::RefillQueue => {
-                    let _ = ui_sender
-                        .send(UiUpdate::StatusMessage(
-                            "Refilling prefetch queue...".into(),
-                        ))
-                        .await;
-                    let mut refill_cfg = app_cfg.clone();
-                    if refill_cfg.manager.prefetch_count < 5 {
-                        refill_cfg.manager.prefetch_count = 5;
-                    }
-                    refill_with_progress(
-                        &mut state,
-                        &refill_cfg,
-                        &provider_mgr,
-                        &cache_mgr,
-                        &ui_sender,
-                    )
-                    .await;
-                    let _ = state.save();
-                    let _ = ui_sender
-                        .send(UiUpdate::StateUpdated {
-                            state: state.clone(),
-                            status: "Prefetch queue updated".into(),
-                        })
-                        .await;
                 }
                 Action::UpdateConfig(new_cfg) => {
                     let _ = new_cfg.save();
-                    app_cfg = new_cfg;
+                    backend.cfg = new_cfg;
                 }
-                Action::RefillQueueAndRefresh => {
-                    let _ = ui_sender
-                        .send(UiUpdate::StatusMessage(
-                            "Updating planned wallpapers...".into(),
-                        ))
-                        .await;
-                    state.prefetch_queue.clear();
-                    let mut refill_cfg = app_cfg.clone();
-                    if refill_cfg.manager.prefetch_count < 5 {
-                        refill_cfg.manager.prefetch_count = 5;
-                    }
-                    refill_with_progress(
-                        &mut state,
-                        &refill_cfg,
-                        &provider_mgr,
-                        &cache_mgr,
-                        &ui_sender,
-                    )
-                    .await;
-                    let _ = state.save();
-                    let _ = ui_sender
-                        .send(UiUpdate::StateUpdated {
-                            state: state.clone(),
-                            status: "Planned wallpapers updated".into(),
-                        })
-                        .await;
+                Action::RefreshQueue => {
+                    backend.state.prefetch_queue.clear();
+                    backend.refill().await;
                 }
-                Action::ValidateSourceConfig { source } => {
-                    let provider_name = source.provider.clone();
-                    if let Some(prov) = provider_mgr.providers.get(&provider_name) {
-                        let wit_cfg =
-                            source.to_wit_config(&prov.info.options, &prov.info.default_config);
-                        if let Ok(valid_cfg) =
-                            provider_mgr.validate_config(&provider_name, wit_cfg).await
-                        {
-                            let _ = ui_sender
-                                .send(UiUpdate::SourceConfigNormalized {
-                                    normalized: valid_cfg,
-                                })
-                                .await;
-                        }
-                    }
+                Action::Validate(source) => {
+                    let _ = backend.validated_config(&source).await;
                 }
-                Action::FetchSourcePreviews { source, count } => {
-                    let provider_name = source.provider.clone();
-                    let _ = ui_sender
-                        .send(UiUpdate::StatusMessage(format!(
-                            "Fetching {} previews for {}...",
-                            count, provider_name
-                        )))
-                        .await;
-                    if let Some(prov) = provider_mgr.providers.get(&provider_name) {
-                        let wit_cfg =
-                            source.to_wit_config(&prov.info.options, &prov.info.default_config);
-                        let valid_cfg =
-                            match provider_mgr.validate_config(&provider_name, wit_cfg).await {
-                                Ok(c) => {
-                                    let _ = ui_sender
-                                        .send(UiUpdate::SourceConfigNormalized {
-                                            normalized: c.clone(),
-                                        })
-                                        .await;
-                                    c
-                                }
-                                Err(e) => {
-                                    let _ = ui_sender
-                                        .send(UiUpdate::SourcePreviewError(format!(
-                                            "Config error: {}",
-                                            e
-                                        )))
-                                        .await;
-                                    continue;
-                                }
-                            };
-                        let filter = wallpp::monitor::compute_filter_criteria(
-                            app_cfg.manager.min_display_percentage,
-                        );
-                        match provider_mgr
-                            .query_list(
-                                &provider_name,
-                                valid_cfg.clone(),
-                                count as u32,
-                                None,
-                                filter,
-                            )
-                            .await
-                        {
-                            Ok(page) => {
-                                let mut items = Vec::new();
-                                for item in page.items.into_iter().take(count) {
-                                    let cache_path = if let Some(p) =
-                                        cache_mgr.get_cached_image(&item.id)
-                                    {
-                                        Some(p)
-                                    } else if let Ok(img) = provider_mgr
-                                        .query_download(&provider_name, valid_cfg.clone(), &item.id)
-                                        .await
-                                    {
-                                        cache_mgr
-                                            .store_image(&item.id, &img.content_type, &img.data)
-                                            .ok()
-                                    } else {
-                                        None
-                                    };
-                                    if let Some(path) = cache_path {
-                                        items.push(SourcePreviewItem {
-                                            id: item.id,
-                                            title: item.title,
-                                            author: item.author,
-                                            width: item.width,
-                                            height: item.height,
-                                            cache_path: path,
-                                        });
-                                    }
-                                }
-                                if items.is_empty() {
-                                    let _ = ui_sender
-                                        .send(UiUpdate::SourcePreviewError(
-                                            "No wallpapers found matching criteria".into(),
-                                        ))
-                                        .await;
-                                } else {
-                                    let _ = ui_sender
-                                        .send(UiUpdate::SourcePreviews {
-                                            provider: provider_name,
-                                            items,
-                                        })
-                                        .await;
-                                    let _ = ui_sender
-                                        .send(UiUpdate::StatusMessage(
-                                            "Source previews loaded".into(),
-                                        ))
-                                        .await;
-                                }
-                            }
-                            Err(e) => {
-                                let _ = ui_sender
-                                    .send(UiUpdate::SourcePreviewError(format!(
-                                        "Query failed: {}",
-                                        e
-                                    )))
-                                    .await;
-                            }
-                        }
-                    } else {
-                        let _ = ui_sender
-                            .send(UiUpdate::SourcePreviewError(format!(
-                                "Provider '{}' not found",
-                                provider_name
-                            )))
-                            .await;
-                    }
-                }
+                Action::Previews(source, count) => backend.previews(source, count).await,
             }
         }
     });
 
-    BackendHandle { sender: action_tx }
+    handle
 }

@@ -8,11 +8,11 @@ pub fn init_css() {
             border-radius: 8px;
             padding: 3px;
         }
-        .future-card {
+        .planned-card {
             background-color: alpha(#7852c0, 0.22);
             border: 2px solid #8a63d2;
         }
-        .future-card:hover {
+        .planned-card:hover {
             background-color: alpha(#7852c0, 0.35);
             border-color: #9d75eb;
         }
@@ -32,7 +32,7 @@ pub fn init_css() {
             background-color: alpha(currentColor, 0.12);
             border-color: alpha(currentColor, 0.3);
         }
-        .badge-future {
+        .badge-planned {
             font-size: 0.75em;
             font-weight: bold;
             padding: 2px 6px;
@@ -71,11 +71,6 @@ pub fn init_css() {
         .card-sub {
             font-size: 0.85em;
             opacity: 0.75;
-        }
-        .status-bar {
-            padding: 6px 14px;
-            background-color: alpha(currentColor, 0.04);
-            border-top: 1px solid alpha(currentColor, 0.12);
         }
         .multiline-scroll {
             border: 1px solid alpha(currentColor, 0.18);

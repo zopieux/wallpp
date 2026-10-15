@@ -1,3 +1,7 @@
+//! General page: manager settings (cache, history, queue, refresh,
+//! strategy), auto-saved on change. Persistence happens in the backend
+//! via `Action::UpdateConfig`; this page only validates locally.
+
 use gtk4::prelude::*;
 use gtk4::{
     Align, Box, CheckButton, DropDown, Entry, EventControllerFocus, Label, Orientation,
@@ -7,347 +11,228 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use wallpp::config::{AppConfig, ByteSize, RefreshStrategy, SourceStrategy};
 
+use super::widgets::{page_box, sub_label, title_label};
 use crate::backend::{Action, BackendHandle};
 
 pub struct GeneralView {
     pub container: Box,
-    config: RefCell<AppConfig>,
-    backend: Rc<BackendHandle>,
+    cfg: Rc<RefCell<AppConfig>>,
+    backend: BackendHandle,
     dirty: Rc<Cell<bool>>,
-    cache_entry: Entry,
-    history_spin: SpinButton,
-    prefetch_spin: SpinButton,
-    interval_entry: Entry,
-    boot_check: CheckButton,
-    refresh_strat_drop: DropDown,
-    source_strat_drop: DropDown,
-    display_percent_spin: SpinButton,
-    feedback_label: Label,
+    cache: Entry,
+    history: SpinButton,
+    prefetch: SpinButton,
+    interval: Entry,
+    boot: CheckButton,
+    refresh_strategy: DropDown,
+    source_strategy: DropDown,
+    display_percent: SpinButton,
+    feedback: Label,
+}
+
+/// Two-column form grid: text in column 0 (expands), controls in column 1.
+/// A shared grid sizes the control column to the widest widget, so every
+/// control aligns on both edges.
+fn form_grid(rows: &[(&str, &str, gtk4::Widget)]) -> gtk4::Grid {
+    let grid = gtk4::Grid::new();
+    grid.set_column_spacing(16);
+    grid.set_row_spacing(16);
+    for (i, (title, desc, control)) in rows.iter().enumerate() {
+        let text = Box::new(Orientation::Vertical, 2);
+        text.set_hexpand(true);
+        text.set_valign(gtk4::Align::Center);
+        text.append(&title_label(title));
+        text.append(&sub_label(desc));
+        control.set_halign(Align::Fill);
+        control.set_valign(gtk4::Align::Center);
+        grid.attach(&text, 0, i as i32, 1, 1);
+        grid.attach(control, 1, i as i32, 1, 1);
+    }
+    grid
+}
+
+macro_rules! bind {
+    ($view:expr, $widget:expr, $signal:ident) => {{
+        let weak = Rc::downgrade(&$view);
+        $widget.$signal(move |_| {
+            if let Some(v) = weak.upgrade() {
+                v.save();
+            }
+        });
+    }};
+}
+
+fn bind_entry(entry: &Entry, view: &Rc<GeneralView>) {
+    bind!(view, entry, connect_activate);
+    let weak = Rc::downgrade(view);
+    let focus = EventControllerFocus::new();
+    focus.connect_leave(move |_| {
+        if let Some(v) = weak.upgrade() {
+            v.save();
+        }
+    });
+    entry.add_controller(focus);
 }
 
 impl GeneralView {
     pub fn new(
-        backend: Rc<BackendHandle>,
-        initial_config: &AppConfig,
+        backend: BackendHandle,
+        cfg: Rc<RefCell<AppConfig>>,
         dirty: Rc<Cell<bool>>,
     ) -> Rc<Self> {
-        let container = Box::new(Orientation::Vertical, 0);
-        container.set_vexpand(true);
-        container.set_hexpand(true);
+        let mgr = cfg.borrow().manager.clone();
+
+        let cache = Entry::new();
+        cache.set_text(&mgr.cache_max_size.to_string());
+        cache.set_placeholder_text(Some("e.g. 1G, 500M"));
+        let history = SpinButton::with_range(1.0, 100_000.0, 10.0);
+        history.set_value(mgr.history_length as f64);
+        let prefetch = SpinButton::with_range(1.0, 50.0, 1.0);
+        prefetch.set_value(mgr.prefetch_count as f64);
+        let interval = Entry::new();
+        interval.set_text(&mgr.refresh_interval_str());
+        interval.set_placeholder_text(Some("e.g. 1h, 30m (leave empty for manual only)"));
+        let boot = CheckButton::new();
+        boot.set_active(mgr.refresh_at_boot);
+        let refresh_strategy = DropDown::from_strings(&["From Boot", "From Last Changed"]);
+        refresh_strategy.set_selected(match mgr.refresh_strategy {
+            RefreshStrategy::FromBoot => 0,
+            RefreshStrategy::FromLastChanged => 1,
+        });
+        let source_strategy = DropDown::from_strings(&["Random", "Round-Robin"]);
+        source_strategy.set_selected(match mgr.source_strategy {
+            SourceStrategy::Random => 0,
+            SourceStrategy::RoundRobin => 1,
+        });
+        let display_percent = SpinButton::with_range(1.0, 200.0, 5.0);
+        display_percent.set_value(mgr.min_display_percentage as f64);
+        let feedback = Label::new(None);
+        feedback.set_halign(Align::Start);
+        feedback.set_margin_top(8);
+
+        let content = page_box(16);
+        content.set_halign(Align::Center);
+        content.set_size_request(540, -1);
+        let header = Box::new(Orientation::Vertical, 4);
+        header.append(&title_label("General Settings"));
+        header.append(&sub_label(
+            "Configure wallpaper management, cache, and automatic refresh rules",
+        ));
+        content.append(&header);
+        content.append(&form_grid(&[
+            (
+                "Cache Max Size",
+                "Maximum disk space used for cached wallpapers",
+                cache.clone().upcast(),
+            ),
+            (
+                "History Length",
+                "Maximum number of past wallpapers to retain in history",
+                history.clone().upcast(),
+            ),
+            (
+                "Planned Queue Count",
+                "Number of upcoming wallpapers to prefetch and display in queue",
+                prefetch.clone().upcast(),
+            ),
+            (
+                "Refresh Interval",
+                "Automatic wallpaper rotation interval (e.g. 1h, 30m)",
+                interval.clone().upcast(),
+            ),
+            (
+                "Refresh At Boot",
+                "Change wallpaper on system startup",
+                boot.clone().upcast(),
+            ),
+            (
+                "Refresh Timing Strategy",
+                "Calculate interval from system boot or from last wallpaper transition",
+                refresh_strategy.clone().upcast(),
+            ),
+            (
+                "Source Selection Strategy",
+                "Algorithm for selecting which source to pick the next wallpaper from",
+                source_strategy.clone().upcast(),
+            ),
+            (
+                "Minimum Display Percentage",
+                "Minimum wallpaper resolution relative to biggest display (%)",
+                display_percent.clone().upcast(),
+            ),
+        ]));
+        content.append(&feedback);
 
         let scroll = ScrolledWindow::builder()
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vscrollbar_policy(gtk4::PolicyType::Automatic)
             .vexpand(true)
             .hexpand(true)
+            .child(&content)
             .build();
-
-        let content = Box::new(Orientation::Vertical, 16);
-        content.set_margin_start(24);
-        content.set_margin_end(24);
-        content.set_margin_top(20);
-        content.set_margin_bottom(24);
-        content.set_halign(Align::Center);
-        content.set_size_request(540, -1);
-
-        let title_box = Box::new(Orientation::Vertical, 4);
-        let title = Label::new(Some("General Settings"));
-        title.add_css_class("card-title");
-        title.set_halign(Align::Start);
-        let sub = Label::new(Some(
-            "Configure wallpaper management, cache, and automatic refresh rules",
-        ));
-        sub.add_css_class("card-sub");
-        sub.set_halign(Align::Start);
-        title_box.append(&title);
-        title_box.append(&sub);
-        content.append(&title_box);
-
-        let mgr = &initial_config.manager;
-
-        // Cache Max Size
-        let cache_entry = Entry::new();
-        cache_entry.set_text(&mgr.cache_max_size.to_string());
-        cache_entry.set_placeholder_text(Some("e.g. 1G, 500M"));
-        content.append(&build_form_row(
-            "Cache Max Size",
-            "Maximum disk space used for cached wallpapers",
-            &cache_entry,
-        ));
-
-        // History Length
-        let history_spin = SpinButton::with_range(1.0, 100_000.0, 10.0);
-        history_spin.set_value(mgr.history_length as f64);
-        content.append(&build_form_row(
-            "History Length",
-            "Maximum number of past wallpapers to retain in history",
-            &history_spin,
-        ));
-
-        // Prefetch Count
-        let prefetch_spin = SpinButton::with_range(1.0, 50.0, 1.0);
-        prefetch_spin.set_value(mgr.prefetch_count as f64);
-        content.append(&build_form_row(
-            "Planned Queue Count",
-            "Number of upcoming wallpapers to prefetch and display in queue",
-            &prefetch_spin,
-        ));
-
-        // Refresh Interval
-        let interval_entry = Entry::new();
-        let interval_str = mgr.refresh_interval_str();
-        interval_entry.set_text(&interval_str);
-        interval_entry.set_placeholder_text(Some("e.g. 1h, 30m (leave empty for manual only)"));
-        content.append(&build_form_row(
-            "Refresh Interval",
-            "Automatic wallpaper rotation interval (e.g. 1h, 30m)",
-            &interval_entry,
-        ));
-
-        // Refresh At Boot
-        let boot_check = CheckButton::new();
-        boot_check.set_active(mgr.refresh_at_boot);
-        boot_check.set_valign(Align::Center);
-        content.append(&build_form_row(
-            "Refresh At Boot",
-            "Change wallpaper on system startup",
-            &boot_check,
-        ));
-
-        // Refresh Strategy
-        let refresh_strat_drop = DropDown::from_strings(&["From Boot", "From Last Changed"]);
-        refresh_strat_drop.set_selected(match mgr.refresh_strategy {
-            RefreshStrategy::FromBoot => 0,
-            RefreshStrategy::FromLastChanged => 1,
-        });
-        content.append(&build_form_row(
-            "Refresh Timing Strategy",
-            "Calculate interval from system boot or from last wallpaper transition",
-            &refresh_strat_drop,
-        ));
-
-        // Source Strategy
-        let source_strat_drop = DropDown::from_strings(&["Random", "Round-Robin"]);
-        source_strat_drop.set_selected(match mgr.source_strategy {
-            SourceStrategy::Random => 0,
-            SourceStrategy::RoundRobin => 1,
-        });
-        content.append(&build_form_row(
-            "Source Selection Strategy",
-            "Algorithm for selecting which source to pick the next wallpaper from",
-            &source_strat_drop,
-        ));
-
-        // Min Display Percentage
-        let display_percent_spin = SpinButton::with_range(1.0, 200.0, 5.0);
-        display_percent_spin.set_value(mgr.min_display_percentage as f64);
-        content.append(&build_form_row(
-            "Minimum Display Percentage",
-            "Minimum wallpaper resolution relative to biggest display (%)",
-            &display_percent_spin,
-        ));
-
-        // Feedback label & Save button
-        let feedback_label = Label::new(None);
-        feedback_label.set_halign(Align::Start);
-        feedback_label.set_margin_top(8);
-        content.append(&feedback_label);
-
-        scroll.set_child(Some(&content));
+        let container = Box::new(Orientation::Vertical, 0);
         container.append(&scroll);
 
         let view = Rc::new(Self {
             container,
-            config: RefCell::new(initial_config.clone()),
+            cfg,
             backend,
             dirty,
-            cache_entry,
-            history_spin,
-            prefetch_spin,
-            interval_entry,
-            boot_check,
-            refresh_strat_drop,
-            source_strat_drop,
-            display_percent_spin,
-            feedback_label,
+            cache,
+            history,
+            prefetch,
+            interval,
+            boot,
+            refresh_strategy,
+            source_strategy,
+            display_percent,
+            feedback,
         });
 
-        let view_weak = Rc::downgrade(&view);
-
-        // Auto-save on any change
-        let vw = view_weak.clone();
-        view.history_spin.connect_value_changed(move |_| {
-            if let Some(v) = vw.upgrade() {
-                v.save_and_apply();
-            }
-        });
-        let vw = view_weak.clone();
-        view.prefetch_spin.connect_value_changed(move |_| {
-            if let Some(v) = vw.upgrade() {
-                v.save_and_apply();
-            }
-        });
-        let vw = view_weak.clone();
-        view.display_percent_spin.connect_value_changed(move |_| {
-            if let Some(v) = vw.upgrade() {
-                v.save_and_apply();
-            }
-        });
-        let vw = view_weak.clone();
-        view.boot_check.connect_toggled(move |_| {
-            if let Some(v) = vw.upgrade() {
-                v.save_and_apply();
-            }
-        });
-        let vw = view_weak.clone();
-        view.refresh_strat_drop.connect_selected_notify(move |_| {
-            if let Some(v) = vw.upgrade() {
-                v.save_and_apply();
-            }
-        });
-        let vw = view_weak.clone();
-        view.source_strat_drop.connect_selected_notify(move |_| {
-            if let Some(v) = vw.upgrade() {
-                v.save_and_apply();
-            }
-        });
-
-        let vw = view_weak.clone();
-        view.cache_entry.connect_activate(move |_| {
-            if let Some(v) = vw.upgrade() {
-                v.save_and_apply();
-            }
-        });
-        let fc = EventControllerFocus::new();
-        let vw = view_weak.clone();
-        fc.connect_leave(move |_| {
-            if let Some(v) = vw.upgrade() {
-                v.save_and_apply();
-            }
-        });
-        view.cache_entry.add_controller(fc);
-
-        let vw = view_weak.clone();
-        view.interval_entry.connect_activate(move |_| {
-            if let Some(v) = vw.upgrade() {
-                v.save_and_apply();
-            }
-        });
-        let fc = EventControllerFocus::new();
-        let vw = view_weak.clone();
-        fc.connect_leave(move |_| {
-            if let Some(v) = vw.upgrade() {
-                v.save_and_apply();
-            }
-        });
-        view.interval_entry.add_controller(fc);
-
+        bind!(view, view.history, connect_value_changed);
+        bind!(view, view.prefetch, connect_value_changed);
+        bind!(view, view.display_percent, connect_value_changed);
+        bind!(view, view.boot, connect_toggled);
+        bind!(view, view.refresh_strategy, connect_selected_notify);
+        bind!(view, view.source_strategy, connect_selected_notify);
+        bind_entry(&view.cache, &view);
+        bind_entry(&view.interval, &view);
         view
     }
 
-    #[allow(dead_code)]
-    pub fn update_config(&self, new_cfg: &AppConfig) {
-        *self.config.borrow_mut() = new_cfg.clone();
-        let mgr = &new_cfg.manager;
-        self.cache_entry.set_text(&mgr.cache_max_size.to_string());
-        self.history_spin.set_value(mgr.history_length as f64);
-        self.prefetch_spin.set_value(mgr.prefetch_count as f64);
-        let interval_str = mgr.refresh_interval_str();
-        self.interval_entry.set_text(&interval_str);
-        self.boot_check.set_active(mgr.refresh_at_boot);
-        self.refresh_strat_drop
-            .set_selected(match mgr.refresh_strategy {
-                RefreshStrategy::FromBoot => 0,
-                RefreshStrategy::FromLastChanged => 1,
-            });
-        self.source_strat_drop
-            .set_selected(match mgr.source_strategy {
-                SourceStrategy::Random => 0,
-                SourceStrategy::RoundRobin => 1,
-            });
-        self.display_percent_spin
-            .set_value(mgr.min_display_percentage as f64);
+    fn fail(&self, msg: &str) {
+        self.feedback.set_text(msg);
     }
 
-    fn save_and_apply(&self) {
-        let mut cfg = self.config.borrow().clone();
-
-        // Validate & parse cache max size
-        let cache_str = self.cache_entry.text().to_string();
-        let cache_parsed: ByteSize = match cache_str.trim().parse() {
+    fn save(&self) {
+        let cache_size: ByteSize = match self.cache.text().trim().parse() {
             Ok(b) => b,
-            Err(e) => {
-                self.feedback_label
-                    .set_text(&format!("Invalid cache size '{}': {}", cache_str, e));
-                self.feedback_label.remove_css_class("badge-active");
-                self.feedback_label.add_css_class("badge-history");
-                return;
-            }
+            Err(e) => return self.fail(&format!("Invalid cache size: {e}")),
         };
-
-        // Validate & parse refresh interval
-        let interval_str = self.interval_entry.text().trim().to_string();
-        if let Err(e) = cfg.manager.set_refresh_interval_from_str(&interval_str) {
-            self.feedback_label
-                .set_text(&format!("Invalid refresh interval: {}", e));
-            self.feedback_label.remove_css_class("badge-active");
-            self.feedback_label.add_css_class("badge-history");
-            return;
+        let mut cfg = self.cfg.borrow().clone();
+        if let Err(e) = cfg
+            .manager
+            .set_refresh_interval_from_str(self.interval.text().trim())
+        {
+            return self.fail(&format!("Invalid refresh interval: {e}"));
         }
-
-        cfg.manager.cache_max_size = cache_parsed;
-        cfg.manager.history_length = self.history_spin.value() as usize;
-        cfg.manager.prefetch_count = self.prefetch_spin.value() as usize;
-        cfg.manager.refresh_at_boot = self.boot_check.is_active();
-        cfg.manager.refresh_strategy = match self.refresh_strat_drop.selected() {
+        cfg.manager.cache_max_size = cache_size;
+        cfg.manager.history_length = self.history.value() as usize;
+        cfg.manager.prefetch_count = self.prefetch.value() as usize;
+        cfg.manager.refresh_at_boot = self.boot.is_active();
+        cfg.manager.refresh_strategy = match self.refresh_strategy.selected() {
             0 => RefreshStrategy::FromBoot,
             _ => RefreshStrategy::FromLastChanged,
         };
-        cfg.manager.source_strategy = match self.source_strat_drop.selected() {
+        cfg.manager.source_strategy = match self.source_strategy.selected() {
             0 => SourceStrategy::Random,
             _ => SourceStrategy::RoundRobin,
         };
-        cfg.manager.min_display_percentage = self.display_percent_spin.value() as u32;
+        cfg.manager.min_display_percentage = self.display_percent.value() as u32;
 
-        if let Err(e) = cfg.save() {
-            self.feedback_label
-                .set_text(&format!("Failed to save config: {}", e));
-            self.feedback_label.remove_css_class("badge-active");
-            self.feedback_label.add_css_class("badge-history");
-            return;
-        }
-
+        *self.cfg.borrow_mut() = cfg.clone();
         self.dirty.set(true);
-        *self.config.borrow_mut() = cfg.clone();
         self.backend.send(Action::UpdateConfig(cfg));
-        self.feedback_label.set_text("");
+        self.feedback.set_text("");
     }
-}
-
-fn build_form_row(title: &str, desc: &str, control: &impl IsA<gtk4::Widget>) -> Box {
-    let row = Box::new(Orientation::Horizontal, 16);
-    row.set_hexpand(true);
-
-    let text_box = Box::new(Orientation::Vertical, 2);
-    text_box.set_hexpand(true);
-    text_box.set_halign(Align::Start);
-    text_box.set_valign(Align::Center);
-
-    let title_lbl = Label::new(Some(title));
-    title_lbl.set_halign(Align::Start);
-    title_lbl.add_css_class("card-title");
-
-    let desc_lbl = Label::new(Some(desc));
-    desc_lbl.set_halign(Align::Start);
-    desc_lbl.add_css_class("card-sub");
-
-    text_box.append(&title_lbl);
-    text_box.append(&desc_lbl);
-
-    control.set_halign(Align::End);
-    control.set_valign(Align::Center);
-
-    row.append(&text_box);
-    row.append(control);
-    row
 }

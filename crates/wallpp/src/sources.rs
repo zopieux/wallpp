@@ -39,6 +39,35 @@ pub fn compute_display_label(
     }
 }
 
+/// Pick the starting source index for a strategy: a time-seeded random
+/// source, or the round-robin successor of the last used source.
+pub fn pick_source_index(
+    sources: &[ResolvedSource],
+    strategy: crate::config::SourceStrategy,
+    last_source: Option<&str>,
+) -> usize {
+    match strategy {
+        crate::config::SourceStrategy::Random => {
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            (seed as usize) % sources.len()
+        }
+        crate::config::SourceStrategy::RoundRobin => match last_source {
+            Some(last) => sources
+                .iter()
+                .position(|s| {
+                    s.display_label.eq_ignore_ascii_case(last)
+                        || s.provider.name.eq_ignore_ascii_case(last)
+                })
+                .map(|pos| (pos + 1) % sources.len())
+                .unwrap_or(0),
+            None => 0,
+        },
+    }
+}
+
 /// Resolves active sources based on configuration and discovered providers.
 /// When `app_cfg.source` is empty, all discovered providers are enabled by default.
 /// When `source_filter` is specified, filters by source label or provider name.

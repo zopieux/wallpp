@@ -1,8 +1,6 @@
 use serde::Deserialize;
 use std::collections::HashSet;
 use wallpp_provider_sdk::*;
-use wstd::http::{Client, Request};
-use wstd::io::AsyncRead;
 use wstd::runtime::block_on;
 
 const USER_AGENT: &str =
@@ -62,92 +60,44 @@ fn parse_dimensions(url: &str) -> Option<(u32, u32)> {
     None
 }
 
-async fn http_get(url: String) -> Result<(Vec<u8>, Option<String>), ProviderError> {
-    let req = Request::get(&url)
-        .header("user-agent", USER_AGENT)
-        .header("accept", "*/*")
-        .body(wstd::io::empty())
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    let mut resp = Client::new()
-        .send(req)
-        .await
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    let status = resp.status();
-    if status.as_u16() == 429 {
-        return Err(ProviderError::RateLimited(None));
-    }
-    if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Err(ProviderError::Auth(format!("HTTP {}", status)));
-    }
-    if !status.is_success() {
-        return Err(ProviderError::Network(format!("HTTP {}", status)));
-    }
-
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    let mut body = Vec::new();
-    resp.body_mut()
-        .read_to_end(&mut body)
-        .await
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    Ok((body, content_type))
+async fn fetch(url: &str) -> Result<(Vec<u8>, Option<String>), ProviderError> {
+    http_get(
+        url,
+        &[("user-agent", USER_AGENT), ("accept", "*/*")],
+        |_| false,
+    )
+    .await
 }
 
 struct WindowsProvider;
 
 impl Guest for WindowsProvider {
     fn info() -> ProviderInfo {
-        ProviderInfo {
-            name: "windows".to_string(),
-            label: "Windows Spotlight".to_string(),
-            version: "0.1.0".to_string(),
-            options: vec![
-                OptionSpec {
-                    key: "locale".to_string(),
-                    label: "Locale".to_string(),
-                    description: Some(
-                        "Language and regional locale (e.g. en-US, de-DE, ja-JP)".to_string(),
-                    ),
-                    ty: ScalarType::Text,
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Text("en-US".to_string()))),
-                },
-                OptionSpec {
-                    key: "country".to_string(),
-                    label: "Country".to_string(),
-                    description: Some(
-                        "Two-letter ISO country code (e.g. US, DE, JP). Defaults to country from locale."
-                            .to_string(),
-                    ),
-                    ty: ScalarType::Text,
-                    multiple: false,
-                    required: false,
-                    default: None,
-                },
+        provider_info(
+            "windows",
+            "Windows Spotlight",
+            "0.1.0",
+            vec![
+                spec("locale", "Locale", ScalarType::Text)
+                    .desc("Language and regional locale (e.g. en-US, de-DE, ja-JP)")
+                    .default_text("en-US")
+                    .build(),
+                spec("country", "Country", ScalarType::Text)
+                    .desc("Two-letter ISO country code (e.g. US, DE, JP). Defaults to country from locale.")
+                    .build(),
             ],
-            default_config: vec![ConfigEntry {
-                key: "locale".to_string(),
-                value: ConfigValue::One(ScalarValue::Text("en-US".to_string())),
-            }],
-            allowed_hosts: vec![
-                "fd.api.iris.microsoft.com".to_string(),
-                "*.api.iris.microsoft.com".to_string(),
-                "*.iris.microsoft.com".to_string(),
-                "*.msn.com".to_string(),
-                "res.public.onecdn.static.microsoft".to_string(),
-                "*.onecdn.static.microsoft".to_string(),
-                "*.microsoft.com".to_string(),
-                "*.bing.com".to_string(),
+            &["locale"],
+            &[
+                "fd.api.iris.microsoft.com",
+                "*.api.iris.microsoft.com",
+                "*.iris.microsoft.com",
+                "*.msn.com",
+                "res.public.onecdn.static.microsoft",
+                "*.onecdn.static.microsoft",
+                "*.microsoft.com",
+                "*.bing.com",
             ],
-        }
+        )
     }
 
     fn list(
@@ -180,7 +130,7 @@ impl Guest for WindowsProvider {
             country, locale
         );
 
-        let (body, _) = block_on(async move { http_get(request_url).await })?;
+        let (body, _) = block_on(async move { fetch(&request_url).await })?;
         let resp: BatchResponse =
             serde_json::from_slice(&body).map_err(|e| ProviderError::Network(e.to_string()))?;
 
@@ -229,50 +179,37 @@ impl Guest for WindowsProvider {
                 }
             });
 
-            if want_landscape {
-                if let Some(asset_url) = ad
-                    .landscape_image
+            for (asset, want, fallback) in [
+                (ad.landscape_image, want_landscape, (3840, 2160)),
+                (ad.portrait_image, want_portrait, (1080, 1920)),
+            ] {
+                if !want {
+                    continue;
+                }
+                let Some(asset_url) = asset
                     .and_then(|img| img.asset)
                     .filter(|u| u.starts_with("https://") && !u.ends_with("empty.jpg"))
-                {
-                    if seen_ids.insert(asset_url.clone()) {
-                        let (w, h) = parse_dimensions(&asset_url).unwrap_or((3840, 2160));
-                        wallpapers.push(Wallpaper {
-                            id: asset_url,
-                            title: title.clone(),
-                            author: author.clone(),
-                            source_url: source_url.clone(),
-                            width: Some(w),
-                            height: Some(h),
-                        });
-                        if limit > 0 && wallpapers.len() >= limit as usize {
-                            break;
-                        }
-                    }
+                else {
+                    continue;
+                };
+                if !seen_ids.insert(asset_url.clone()) {
+                    continue;
+                }
+                let (w, h) = parse_dimensions(&asset_url).unwrap_or(fallback);
+                wallpapers.push(Wallpaper {
+                    id: asset_url,
+                    title: title.clone(),
+                    author: author.clone(),
+                    source_url: source_url.clone(),
+                    width: Some(w),
+                    height: Some(h),
+                });
+                if limit > 0 && wallpapers.len() >= limit as usize {
+                    break;
                 }
             }
-
-            if want_portrait {
-                if let Some(asset_url) = ad
-                    .portrait_image
-                    .and_then(|img| img.asset)
-                    .filter(|u| u.starts_with("https://") && !u.ends_with("empty.jpg"))
-                {
-                    if seen_ids.insert(asset_url.clone()) {
-                        let (w, h) = parse_dimensions(&asset_url).unwrap_or((1080, 1920));
-                        wallpapers.push(Wallpaper {
-                            id: asset_url,
-                            title: title.clone(),
-                            author: author.clone(),
-                            source_url: source_url.clone(),
-                            width: Some(w),
-                            height: Some(h),
-                        });
-                        if limit > 0 && wallpapers.len() >= limit as usize {
-                            break;
-                        }
-                    }
-                }
+            if limit > 0 && wallpapers.len() >= limit as usize {
+                break;
             }
         }
 
@@ -283,7 +220,7 @@ impl Guest for WindowsProvider {
     }
 
     fn download(_cfg: Config, id: String) -> Result<Image, ProviderError> {
-        let (data, ct) = block_on(async move { http_get(id).await })?;
+        let (data, ct) = block_on(async move { fetch(&id).await })?;
         Ok(Image {
             content_type: ct.unwrap_or_else(|| "image/jpeg".to_string()),
             data,

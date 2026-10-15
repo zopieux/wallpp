@@ -1,8 +1,6 @@
 use serde::Deserialize;
 use url::Url;
 use wallpp_provider_sdk::*;
-use wstd::http::{Client, Request};
-use wstd::io::AsyncRead;
 use wstd::runtime::block_on;
 
 const USER_AGENT: &str = "wallpp/0.1.0";
@@ -22,211 +20,89 @@ struct WallhavenItem {
     source: Option<String>,
 }
 
-async fn http_get(
-    url: String,
-    referer: Option<String>,
+async fn fetch(
+    url: &str,
+    referer: Option<&str>,
     api_key: Option<String>,
 ) -> Result<(Vec<u8>, Option<String>), ProviderError> {
-    let mut builder = Request::get(&url)
-        .header("user-agent", USER_AGENT)
-        .header("accept", "*/*");
-
-    if let Some(ref r) = referer {
-        builder = builder.header("referer", r);
+    let mut headers = vec![("user-agent", USER_AGENT), ("accept", "*/*")];
+    if let Some(referer) = referer {
+        headers.push(("referer", referer));
     }
-
-    if let Some(ref key) = api_key {
-        let trimmed = key.trim();
-        if !trimmed.is_empty() {
-            builder = builder.header("X-API-Key", trimmed);
-        }
+    if let Some(key) = api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    {
+        headers.push(("X-API-Key", key));
     }
-
-    let req = builder
-        .body(wstd::io::empty())
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    let mut resp = Client::new()
-        .send(req)
-        .await
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    let status = resp.status();
-    if status.as_u16() == 429 {
-        return Err(ProviderError::RateLimited(None));
-    }
-
-    if !status.is_success() {
-        let mut err_body = Vec::new();
-        let _ = resp.body_mut().read_to_end(&mut err_body).await;
-        let err_msg = String::from_utf8_lossy(&err_body);
-        let trimmed_msg = err_msg.trim();
-
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(ProviderError::Auth(if trimmed_msg.is_empty() {
-                format!("HTTP {}", status)
-            } else {
-                format!("HTTP {}: {}", status, trimmed_msg)
-            }));
-        }
-
-        return Err(ProviderError::Network(if trimmed_msg.is_empty() {
-            format!("HTTP {}", status)
-        } else {
-            format!("HTTP {}: {}", status, trimmed_msg)
-        }));
-    }
-
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    let mut body = Vec::new();
-    resp.body_mut()
-        .read_to_end(&mut body)
-        .await
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    Ok((body, content_type))
+    http_get(url, &headers, |_| false).await
 }
 
 struct WallhavenProvider;
 
 impl Guest for WallhavenProvider {
     fn info() -> ProviderInfo {
-        ProviderInfo {
-            name: "wallhaven".to_string(),
-            label: "Wallhaven".to_string(),
-            version: "0.1.0".to_string(),
-            options: vec![
-                OptionSpec {
-                    key: "query".to_string(),
-                    label: "Search Query".to_string(),
-                    description: Some(
-                        "Search query or tags (e.g. nature, mountains, +waterfall -water, -{digital art})"
-                            .to_string(),
-                    ),
-                    ty: ScalarType::Text,
-                    multiple: false,
-                    required: false,
-                    default: None,
-                },
-                OptionSpec {
-                    key: "categories".to_string(),
-                    label: "Categories".to_string(),
-                    description: Some(
-                        "Categories to include: general, anime, people".to_string(),
-                    ),
-                    ty: ScalarType::Choice(vec![
-                        "general".to_string(),
-                        "anime".to_string(),
-                        "people".to_string(),
-                    ]),
-                    multiple: true,
-                    required: false,
-                    default: Some(ConfigValue::Many(vec![ScalarValue::Choice(
-                        "general".to_string(),
-                    )])),
-                },
-                OptionSpec {
-                    key: "allow_sketchy".to_string(),
-                    label: "Allow Sketchy".to_string(),
-                    description: Some("Include sketchy-rated wallpapers".to_string()),
-                    ty: ScalarType::Boolean,
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Boolean(false))),
-                },
-                OptionSpec {
-                    key: "allow_nsfw".to_string(),
-                    label: "Allow NSFW".to_string(),
-                    description: Some(
-                        "Include NSFW-rated wallpapers (requires api_key)".to_string(),
-                    ),
-                    ty: ScalarType::Boolean,
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Boolean(false))),
-                },
-                OptionSpec {
-                    key: "sorting".to_string(),
-                    label: "Sorting".to_string(),
-                    description: Some(
-                        "Sorting method (random, favorites, toplist, views, relevance, date_added)"
-                            .to_string(),
-                    ),
-                    ty: ScalarType::Choice(vec![
-                        "random".to_string(),
-                        "favorites".to_string(),
-                        "toplist".to_string(),
-                        "views".to_string(),
-                        "relevance".to_string(),
-                        "date_added".to_string(),
-                    ]),
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Choice("random".to_string()))),
-                },
-                OptionSpec {
-                    key: "top_range".to_string(),
-                    label: "Toplist Time Range".to_string(),
-                    description: Some(
-                        "Time range when sorting is 'toplist' (1d, 3d, 1w, 1M, 3M, 6M, 1y)"
-                            .to_string(),
-                    ),
-                    ty: ScalarType::Choice(vec![
-                        "1d".to_string(),
-                        "3d".to_string(),
-                        "1w".to_string(),
-                        "1M".to_string(),
-                        "3M".to_string(),
-                        "6M".to_string(),
-                        "1y".to_string(),
-                    ]),
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Choice("1M".to_string()))),
-                },
-                OptionSpec {
-                    key: "api_key".to_string(),
-                    label: "API Key".to_string(),
-                    description: Some(
-                        "Wallhaven API key (optional, required if allow_nsfw is enabled)"
-                            .to_string(),
-                    ),
-                    ty: ScalarType::Secret,
-                    multiple: false,
-                    required: false,
-                    default: None,
-                },
+        provider_info(
+            "wallhaven",
+            "Wallhaven",
+            "0.1.0",
+            vec![
+                spec("query", "Search Query", ScalarType::Text)
+                    .desc("Search query or tags (e.g. nature, mountains, +waterfall -water, -{digital art})")
+                    .build(),
+                spec(
+                    "categories",
+                    "Categories",
+                    ScalarType::Choice(strings(&["general", "anime", "people"])),
+                )
+                .desc("Categories to include: general, anime, people")
+                .multiple()
+                .default_choices(&["general"])
+                .build(),
+                spec("allow_sketchy", "Allow Sketchy", ScalarType::Boolean)
+                    .desc("Include sketchy-rated wallpapers")
+                    .default_bool(false)
+                    .build(),
+                spec("allow_nsfw", "Allow NSFW", ScalarType::Boolean)
+                    .desc("Include NSFW-rated wallpapers (requires api_key)")
+                    .default_bool(false)
+                    .build(),
+                spec(
+                    "sorting",
+                    "Sorting",
+                    ScalarType::Choice(strings(&[
+                        "random",
+                        "favorites",
+                        "toplist",
+                        "views",
+                        "relevance",
+                        "date_added",
+                    ])),
+                )
+                .desc("Sorting method (random, favorites, toplist, views, relevance, date_added)")
+                .default_choice("random")
+                .build(),
+                spec(
+                    "top_range",
+                    "Toplist Time Range",
+                    ScalarType::Choice(strings(&["1d", "3d", "1w", "1M", "3M", "6M", "1y"])),
+                )
+                .desc("Time range when sorting is 'toplist' (1d, 3d, 1w, 1M, 3M, 6M, 1y)")
+                .default_choice("1M")
+                .build(),
+                spec("api_key", "API Key", ScalarType::Secret)
+                    .desc("Wallhaven API key (optional, required if allow_nsfw is enabled)")
+                    .build(),
             ],
-            default_config: vec![
-                ConfigEntry {
-                    key: "categories".to_string(),
-                    value: ConfigValue::Many(vec![ScalarValue::Choice("general".to_string())]),
-                },
-                ConfigEntry {
-                    key: "allow_sketchy".to_string(),
-                    value: ConfigValue::One(ScalarValue::Boolean(false)),
-                },
-                ConfigEntry {
-                    key: "allow_nsfw".to_string(),
-                    value: ConfigValue::One(ScalarValue::Boolean(false)),
-                },
-                ConfigEntry {
-                    key: "sorting".to_string(),
-                    value: ConfigValue::One(ScalarValue::Choice("random".to_string())),
-                },
+            &["categories", "allow_sketchy", "allow_nsfw", "sorting"],
+            &[
+                "wallhaven.cc",
+                "*.wallhaven.cc",
+                "w.wallhaven.cc",
+                "th.wallhaven.cc",
             ],
-            allowed_hosts: vec![
-                "wallhaven.cc".to_string(),
-                "*.wallhaven.cc".to_string(),
-                "w.wallhaven.cc".to_string(),
-                "th.wallhaven.cc".to_string(),
-            ],
-        }
+        )
     }
 
     fn list(
@@ -306,8 +182,7 @@ impl Guest for WallhavenProvider {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let (body, _) =
-            block_on(async move { http_get(api_url.as_str().to_string(), None, api_key).await })?;
+        let (body, _) = block_on(async move { fetch(api_url.as_str(), None, api_key).await })?;
 
         let parsed: WallhavenSearchResponse = serde_json::from_slice(&body).map_err(|e| {
             ProviderError::Other(format!("Failed to parse Wallhaven response: {}", e))
@@ -353,9 +228,8 @@ impl Guest for WallhavenProvider {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let (data, ct) = block_on(async move {
-            http_get(id, Some("https://wallhaven.cc/".to_string()), api_key).await
-        })?;
+        let (data, ct) =
+            block_on(async move { fetch(&id, Some("https://wallhaven.cc/"), api_key).await })?;
         Ok(Image {
             content_type: ct.unwrap_or_else(|| "image/jpeg".to_string()),
             data,

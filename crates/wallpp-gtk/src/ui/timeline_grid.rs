@@ -1,6 +1,13 @@
+//! Fluid fixed-aspect thumbnail grid (height-for-width): the column
+//! count follows the available width, every cell fills its row slot,
+//! and the cell height derives from the aspect ratio. Children are
+//! allocated exact cell rectangles and never measured, so image
+//! widgets cannot leak their intrinsic size into the layout (which is
+//! what pinned stock flow grids to a few stretched-apart columns).
+
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use gtk4::{Allocation, Orientation, SizeRequestMode, Widget};
+use gtk4::{glib, Allocation, Orientation, SizeRequestMode, Widget};
 
 mod imp {
     use super::*;
@@ -10,8 +17,6 @@ mod imp {
         pub aspect: Cell<f64>,
         pub spacing: Cell<i32>,
         pub min_cell_width: Cell<i32>,
-        pub target_rows: Cell<f64>,
-        pub viewport_height: Cell<i32>,
     }
 
     impl Default for TimelineGrid {
@@ -19,9 +24,7 @@ mod imp {
             Self {
                 aspect: Cell::new(16.0 / 9.0),
                 spacing: Cell::new(8),
-                min_cell_width: Cell::new(180),
-                target_rows: Cell::new(4.0),
-                viewport_height: Cell::new(0),
+                min_cell_width: Cell::new(240),
             }
         }
     }
@@ -41,6 +44,41 @@ mod imp {
         }
     }
 
+    pub struct Layout {
+        pub cols: i32,
+        pub cell_w: i32,
+        pub cell_h: i32,
+    }
+
+    impl TimelineGrid {
+        pub fn layout(&self, width: i32) -> Layout {
+            let aspect = self.aspect.get();
+            let sp = self.spacing.get();
+            let min_w = self.min_cell_width.get();
+            let width = width.max(min_w);
+            let cols = ((width + sp) / (min_w + sp)).max(1);
+            let cell_w = (width - (cols - 1) * sp) / cols;
+            let cell_h = (cell_w as f64 / aspect).round() as i32;
+            Layout {
+                cols,
+                cell_w,
+                cell_h,
+            }
+        }
+
+        fn child_count(&self) -> i32 {
+            let mut n = 0;
+            let mut child = self.obj().first_child();
+            while let Some(c) = child {
+                if c.should_layout() {
+                    n += 1;
+                }
+                child = c.next_sibling();
+            }
+            n
+        }
+    }
+
     impl WidgetImpl for TimelineGrid {
         fn request_mode(&self) -> SizeRequestMode {
             SizeRequestMode::HeightForWidth
@@ -54,7 +92,11 @@ mod imp {
                     let width = if for_size > 0 { for_size } else { min_w };
                     let layout = self.layout(width);
                     let count = self.child_count();
-                    let rows = (count + layout.cols - 1) / layout.cols;
+                    let rows = if layout.cols > 0 {
+                        (count + layout.cols - 1) / layout.cols
+                    } else {
+                        0
+                    };
                     let h = if rows > 0 {
                         rows * layout.cell_h + (rows - 1) * self.spacing.get()
                     } else {
@@ -82,7 +124,6 @@ mod imp {
                     } else {
                         layout.cell_w
                     };
-                    c.measure(Orientation::Horizontal, -1);
                     c.size_allocate(&Allocation::new(x, y, w, layout.cell_h), -1);
                     idx += 1;
                 }
@@ -90,59 +131,11 @@ mod imp {
             }
         }
     }
-
-    pub struct Layout {
-        pub cols: i32,
-        pub cell_w: i32,
-        pub cell_h: i32,
-    }
-
-    impl TimelineGrid {
-        pub fn child_count(&self) -> i32 {
-            let mut n = 0;
-            let mut child = self.obj().first_child();
-            while let Some(c) = child {
-                if c.should_layout() {
-                    n += 1;
-                }
-                child = c.next_sibling();
-            }
-            n
-        }
-
-        /// Pick the column count whose cell height best fits `target_rows` rows in the
-        /// visible viewport, bounded by the minimum absolute cell width.
-        pub fn layout(&self, width: i32) -> Layout {
-            let aspect = self.aspect.get();
-            let sp = self.spacing.get();
-            let min_w = self.min_cell_width.get();
-            let width = width.max(min_w);
-
-            let max_cols = ((width + sp) / (min_w + sp)).max(1);
-            let vh = self.viewport_height.get();
-            let ideal_cols = if vh > 0 {
-                let target_h = vh as f64 / self.target_rows.get();
-                let target_w = target_h * aspect;
-                ((width + sp) as f64 / (target_w + sp as f64)).round() as i32
-            } else {
-                max_cols
-            };
-            let cols = ideal_cols.clamp(1, max_cols);
-
-            let cell_w = (width - (cols - 1) * sp) / cols;
-            let cell_h = (cell_w as f64 / aspect).round() as i32;
-            Layout {
-                cols,
-                cell_w,
-                cell_h,
-            }
-        }
-    }
 }
 
 glib::wrapper! {
-    /// Fluid grid of fixed-aspect cells: column count follows the available width,
-    /// cell width fills the row, and cell height derives from the aspect ratio.
+    /// Fluid grid of fixed-aspect cells: column count follows the
+    /// available width and cells fill the row without gaps.
     pub struct TimelineGrid(ObjectSubclass<imp::TimelineGrid>)
         @extends Widget,
         @implements gtk4::Accessible, gtk4::Buildable, gtk4::ConstraintTarget;
@@ -165,23 +158,27 @@ impl TimelineGrid {
         }
     }
 
-    pub fn set_viewport_height(&self, height: i32) {
+    pub fn set_aspect(&self, aspect: f64) {
         let imp = self.imp();
-        if imp.viewport_height.get() != height {
-            imp.viewport_height.set(height);
+        if (imp.aspect.get() - aspect).abs() > f64::EPSILON {
+            imp.aspect.set(aspect);
             self.queue_resize();
         }
     }
 
-    /// Vertical offset and height of the cell at `index` for the current allocation.
-    pub fn cell_extent(&self, index: usize) -> Option<(i32, i32)> {
-        let width = self.width();
-        if width <= 0 {
-            return None;
+    /// The child widget at `index` in layout order, if any.
+    pub fn child_at_index(&self, index: i32) -> Option<Widget> {
+        let mut n = 0;
+        let mut child = self.first_child();
+        while let Some(c) = child {
+            if c.should_layout() {
+                if n == index {
+                    return Some(c);
+                }
+                n += 1;
+            }
+            child = c.next_sibling();
         }
-        let imp = self.imp();
-        let layout = imp.layout(width);
-        let row = index as i32 / layout.cols;
-        Some((row * (layout.cell_h + imp.spacing.get()), layout.cell_h))
+        None
     }
 }

@@ -67,6 +67,23 @@ fn run_cmd_with_stdin(cmd: &str, args: &[&str], input: &str) -> bool {
     }
 }
 
+/// Set one or more gsettings wallpaper keys and optionally the zoom option.
+fn set_gsettings(schema: &str, entries: &[(&str, &str)], options_schema: Option<&str>) -> bool {
+    if !is_command_available("gsettings") {
+        return false;
+    }
+    let changed = entries
+        .iter()
+        .any(|(key, value)| run_cmd("gsettings", &["set", schema, key, value]));
+    if let Some(options_schema) = options_schema {
+        let _ = run_cmd(
+            "gsettings",
+            &["set", options_schema, "picture-options", "zoom"],
+        );
+    }
+    changed
+}
+
 /// Desktop environments and window managers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Desktop {
@@ -88,38 +105,34 @@ pub enum Desktop {
 
 /// Detects the desktop environment or window manager.
 pub fn detect_desktop() -> Desktop {
+    const NEEDLES: &[(&str, Desktop)] = &[
+        ("gnome", Desktop::Gnome),
+        ("unity", Desktop::Gnome),
+        ("budgie", Desktop::Gnome),
+        ("kde", Desktop::Kde),
+        ("cinnamon", Desktop::Cinnamon),
+        ("mate", Desktop::Mate),
+        ("xfce", Desktop::Xfce),
+        ("lxqt", Desktop::Lxqt),
+        ("lxde", Desktop::Lxde),
+        ("deepin", Desktop::Deepin),
+        ("sway", Desktop::Sway),
+        ("hyprland", Desktop::Hyprland),
+        ("cosmic", Desktop::Cosmic),
+        ("fluxbox", Desktop::Fluxbox),
+    ];
+
     if let Ok(desktop) = env::var("XDG_CURRENT_DESKTOP") {
         let lower = desktop.to_lowercase();
-        if lower.contains("gnome") || lower.contains("unity") || lower.contains("budgie") {
-            return Desktop::Gnome;
-        } else if lower.contains("kde") {
-            return Desktop::Kde;
-        } else if lower.contains("cinnamon") {
-            return Desktop::Cinnamon;
-        } else if lower.contains("mate") {
-            return Desktop::Mate;
-        } else if lower.contains("xfce") {
-            return Desktop::Xfce;
-        } else if lower.contains("lxqt") {
-            return Desktop::Lxqt;
-        } else if lower.contains("lxde") {
-            return Desktop::Lxde;
-        } else if lower.contains("deepin") {
-            return Desktop::Deepin;
-        } else if lower.contains("sway") {
-            return Desktop::Sway;
-        } else if lower.contains("hyprland") {
-            return Desktop::Hyprland;
-        } else if lower.contains("cosmic") {
-            return Desktop::Cosmic;
-        } else if lower.contains("fluxbox") {
-            return Desktop::Fluxbox;
+        for (needle, de) in NEEDLES {
+            if lower.contains(needle) {
+                return *de;
+            }
         }
     }
 
     if let Ok(session) = env::var("XDG_SESSION_DESKTOP") {
-        let lower = session.to_lowercase();
-        if lower.contains("awesome") {
+        if session.to_lowercase().contains("awesome") {
             return Desktop::Awesome;
         }
     }
@@ -182,107 +195,39 @@ pub fn set_wallpaper(image_path: &Path) -> Result<String> {
 
     match de {
         Desktop::Gnome => {
-            if is_command_available("gsettings") {
-                let s1 = run_cmd(
-                    "gsettings",
-                    &[
-                        "set",
-                        "org.gnome.desktop.background",
-                        "picture-uri",
-                        &file_uri,
-                    ],
-                );
-                let s2 = run_cmd(
-                    "gsettings",
-                    &[
-                        "set",
-                        "org.gnome.desktop.background",
-                        "picture-uri-dark",
-                        &file_uri,
-                    ],
-                );
-                let _ = run_cmd(
-                    "gsettings",
-                    &[
-                        "set",
-                        "org.gnome.desktop.background",
-                        "picture-options",
-                        "zoom",
-                    ],
-                );
-                if s1 || s2 {
-                    return Ok("gsettings (gnome)".to_string());
-                }
+            if set_gsettings(
+                "org.gnome.desktop.background",
+                &[("picture-uri", &file_uri), ("picture-uri-dark", &file_uri)],
+                Some("org.gnome.desktop.background"),
+            ) {
+                return Ok("gsettings (gnome)".to_string());
             }
         }
         Desktop::Cinnamon => {
-            if is_command_available("gsettings") {
-                let s = run_cmd(
-                    "gsettings",
-                    &[
-                        "set",
-                        "org.cinnamon.desktop.background",
-                        "picture-uri",
-                        &file_uri,
-                    ],
-                );
-                let _ = run_cmd(
-                    "gsettings",
-                    &[
-                        "set",
-                        "org.cinnamon.desktop.background",
-                        "picture-options",
-                        "zoom",
-                    ],
-                );
-                if s {
-                    return Ok("gsettings (cinnamon)".to_string());
-                }
+            if set_gsettings(
+                "org.cinnamon.desktop.background",
+                &[("picture-uri", &file_uri)],
+                Some("org.cinnamon.desktop.background"),
+            ) {
+                return Ok("gsettings (cinnamon)".to_string());
             }
         }
         Desktop::Mate => {
-            if is_command_available("gsettings") {
-                let s = run_cmd(
-                    "gsettings",
-                    &["set", "org.mate.background", "picture-filename", &path_str],
-                );
-                let _ = run_cmd(
-                    "gsettings",
-                    &[
-                        "set",
-                        "org.mate.desktop.background",
-                        "picture-options",
-                        "zoom",
-                    ],
-                );
-                if s {
-                    return Ok("gsettings (mate)".to_string());
-                }
+            if set_gsettings(
+                "org.mate.background",
+                &[("picture-filename", &path_str)],
+                Some("org.mate.desktop.background"),
+            ) {
+                return Ok("gsettings (mate)".to_string());
             }
         }
         Desktop::Deepin => {
-            if is_command_available("gsettings") {
-                let s = run_cmd(
-                    "gsettings",
-                    &[
-                        "set",
-                        "com.deepin.wrap.gnome.desktop.background",
-                        "picture-uri",
-                        &file_uri,
-                    ],
-                );
-                let _ = run_cmd(
-                    "gsettings",
-                    &[
-                        "set",
-                        "com.deepin.wrap.gnome.desktop.background",
-                        "picture-options",
-                        "zoom",
-                    ],
-                );
-                if s {
-                    return Ok("gsettings (deepin)".to_string());
-                }
+            if set_gsettings(
+                "com.deepin.wrap.gnome.desktop.background",
+                &[("picture-uri", &file_uri)],
+                Some("com.deepin.wrap.gnome.desktop.background"),
+            ) {
+                return Ok("gsettings (deepin)".to_string());
             }
         }
         Desktop::Kde => {
@@ -343,9 +288,7 @@ pub fn set_wallpaper(image_path: &Path) -> Result<String> {
             if let Some(m) = set_wlroots(&abs_path) {
                 return Ok(m.to_string());
             }
-            if is_command_available("swaymsg")
-                && run_cmd("swaymsg", &["output", "*", "bg", &path_str, "fill"])
-            {
+            if run_cmd("swaymsg", &["output", "*", "bg", &path_str, "fill"]) {
                 return Ok("swaymsg".to_string());
             }
         }
@@ -375,16 +318,12 @@ pub fn set_wallpaper(image_path: &Path) -> Result<String> {
             }
         }
         Desktop::Lxqt => {
-            if is_command_available("pcmanfm-qt")
-                && run_cmd("pcmanfm-qt", &["--set-wallpaper", &path_str])
-            {
+            if run_cmd("pcmanfm-qt", &["--set-wallpaper", &path_str]) {
                 return Ok("pcmanfm-qt".to_string());
             }
         }
         Desktop::Lxde => {
-            if is_command_available("pcmanfm")
-                && run_cmd("pcmanfm", &["--set-wallpaper", &path_str])
-            {
+            if run_cmd("pcmanfm", &["--set-wallpaper", &path_str]) {
                 return Ok("pcmanfm".to_string());
             }
         }
@@ -419,14 +358,12 @@ pub fn set_wallpaper(image_path: &Path) -> Result<String> {
                 "for s in screen do require(\"gears\").wallpaper.maximized(\"{}\", s) end",
                 path_str
             );
-            if is_command_available("awesome-client")
-                && run_cmd_with_stdin("awesome-client", &[], &lua_code)
-            {
+            if run_cmd_with_stdin("awesome-client", &[], &lua_code) {
                 return Ok("awesome-client".to_string());
             }
         }
         Desktop::Fluxbox => {
-            if is_command_available("fbsetbg") && run_cmd("fbsetbg", &[&path_str]) {
+            if run_cmd("fbsetbg", &[&path_str]) {
                 return Ok("fbsetbg".to_string());
             }
         }
@@ -439,12 +376,10 @@ pub fn set_wallpaper(image_path: &Path) -> Result<String> {
     }
 
     // Generic X11 fallbacks (feh, nitrogen).
-    if is_command_available("feh") && run_cmd("feh", &["--bg-fill", &path_str]) {
+    if run_cmd("feh", &["--bg-fill", &path_str]) {
         return Ok("feh".to_string());
     }
-    if is_command_available("nitrogen")
-        && run_cmd("nitrogen", &["--set-zoom-fill", "--save", &path_str])
-    {
+    if run_cmd("nitrogen", &["--set-zoom-fill", "--save", &path_str]) {
         return Ok("nitrogen".to_string());
     }
 

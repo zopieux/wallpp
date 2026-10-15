@@ -70,48 +70,14 @@ pub fn parse_proxy_url(raw: &str) -> Option<ProxyConfig> {
 }
 
 fn percent_decode(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = &input[i + 1..i + 3];
-            if let Ok(v) = u8::from_str_radix(hex, 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    percent_encoding::percent_decode_str(input)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in data.chunks(3) {
-        let b = [
-            chunk[0] as u32,
-            *chunk.get(1).unwrap_or(&0) as u32,
-            *chunk.get(2).unwrap_or(&0) as u32,
-        ];
-        let n = (b[0] << 16) | (b[1] << 8) | b[2];
-        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
-        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(data)
 }
 
 /// Whether `host` is covered by a `NO_PROXY` list (comma separated;
@@ -187,6 +153,32 @@ pub fn send_request(
             async move { Ok(send_via_proxy(request, config, proxy).await) },
         );
     Ok(HostFutureIncomingResponse::pending(handle))
+}
+
+/// Run the HTTP/1.1 client handshake over a (possibly TLS) stream and
+/// spawn the connection driver, as in the default outgoing handler.
+async fn http1_handshake<S>(
+    stream: S,
+    connect_timeout: std::time::Duration,
+) -> Result<
+    (
+        hyper::client::conn::http1::SendRequest<HyperOutgoingBody>,
+        wasmtime_wasi::runtime::AbortOnDropJoinHandle<()>,
+    ),
+    ErrorCode,
+>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let io = TokioIo::new(stream);
+    let (sender, conn) = timeout(connect_timeout, hyper::client::conn::http1::handshake(io))
+        .await
+        .map_err(|_| ErrorCode::ConnectionTimeout)?
+        .map_err(hyper_request_error)?;
+    let worker = wasmtime_wasi::runtime::spawn(async move {
+        let _ = conn.await;
+    });
+    Ok((sender, worker))
 }
 
 async fn send_via_proxy(
@@ -280,31 +272,9 @@ async fn send_via_proxy(
                 return Err(ErrorCode::TlsProtocolError);
             }
         };
-        let io = TokioIo::new(tls_stream);
-        let (sender, conn) = timeout(
-            config.connect_timeout,
-            hyper::client::conn::http1::handshake(io),
-        )
-        .await
-        .map_err(|_| ErrorCode::ConnectionTimeout)?
-        .map_err(hyper_request_error)?;
-        let worker = wasmtime_wasi::runtime::spawn(async move {
-            let _ = conn.await;
-        });
-        (sender, worker)
+        http1_handshake(tls_stream, config.connect_timeout).await?
     } else {
-        let io = TokioIo::new(stream);
-        let (sender, conn) = timeout(
-            config.connect_timeout,
-            hyper::client::conn::http1::handshake(io),
-        )
-        .await
-        .map_err(|_| ErrorCode::ConnectionTimeout)?
-        .map_err(hyper_request_error)?;
-        let worker = wasmtime_wasi::runtime::spawn(async move {
-            let _ = conn.await;
-        });
-        (sender, worker)
+        http1_handshake(stream, config.connect_timeout).await?
     };
 
     // The request on the tunnel is origin-form, as in the default handler.

@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use url::Url;
 use wallpp_provider_sdk::*;
-use wstd::http::{Client, Request};
-use wstd::io::AsyncRead;
 use wstd::runtime::block_on;
 
 const USER_AGENT: &str = "wallpp/0.1.0";
@@ -48,123 +46,43 @@ struct DownloadPayload {
     download_location: Option<String>,
 }
 
-async fn http_get(url: String) -> Result<(Vec<u8>, Option<String>), ProviderError> {
-    let req = Request::get(&url)
-        .header("user-agent", USER_AGENT)
-        .header("accept", "*/*")
-        .body(wstd::io::empty())
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    let mut resp = Client::new()
-        .send(req)
-        .await
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    let status = resp.status();
-    let ratelimit_remaining = resp
-        .headers()
-        .get("x-ratelimit-remaining")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok());
-
-    if status.as_u16() == 429 || (status.as_u16() == 403 && ratelimit_remaining == Some(0)) {
-        return Err(ProviderError::RateLimited(None));
-    }
-
-    if !status.is_success() {
-        let mut err_body = Vec::new();
-        let _ = resp.body_mut().read_to_end(&mut err_body).await;
-        let err_msg = String::from_utf8_lossy(&err_body);
-        let trimmed_msg = err_msg.trim();
-
-        if trimmed_msg.to_lowercase().contains("rate limit") {
-            return Err(ProviderError::RateLimited(None));
-        }
-
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(ProviderError::Auth(if trimmed_msg.is_empty() {
-                format!("HTTP {}", status)
-            } else {
-                format!("HTTP {}: {}", status, trimmed_msg)
-            }));
-        }
-
-        return Err(ProviderError::Network(if trimmed_msg.is_empty() {
-            format!("HTTP {}", status)
-        } else {
-            format!("HTTP {}: {}", status, trimmed_msg)
-        }));
-    }
-
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-
-    let mut body = Vec::new();
-    resp.body_mut()
-        .read_to_end(&mut body)
-        .await
-        .map_err(|e| ProviderError::Network(e.to_string()))?;
-
-    Ok((body, content_type))
+async fn fetch(url: &str) -> Result<(Vec<u8>, Option<String>), ProviderError> {
+    http_get(
+        url,
+        &[("user-agent", USER_AGENT), ("accept", "*/*")],
+        |headers| {
+            headers
+                .get("x-ratelimit-remaining")
+                .and_then(|value| value.to_str().ok())
+                == Some("0")
+        },
+    )
+    .await
 }
 
 struct UnsplashProvider;
 
 impl Guest for UnsplashProvider {
     fn info() -> ProviderInfo {
-        ProviderInfo {
-            name: "unsplash".to_string(),
-            label: "Unsplash".to_string(),
-            version: "0.1.0".to_string(),
-            options: vec![
-                OptionSpec {
-                    key: "api_key".to_string(),
-                    label: "API Key".to_string(),
-                    description: Some("Unsplash Access Key / Client ID".to_string()),
-                    ty: ScalarType::Secret,
-                    multiple: false,
-                    required: false,
-                    default: Some(ConfigValue::One(ScalarValue::Text(
-                        DEFAULT_CLIENT_ID.to_string(),
-                    ))),
-                },
-                OptionSpec {
-                    key: "query".to_string(),
-                    label: "Search Query".to_string(),
-                    description: Some(
-                        "Search terms or keywords (e.g. nature, wallpapers, architecture)"
-                            .to_string(),
-                    ),
-                    ty: ScalarType::Text,
-                    multiple: false,
-                    required: false,
-                    default: None,
-                },
-                OptionSpec {
-                    key: "topics".to_string(),
-                    label: "Topics".to_string(),
-                    description: Some(
-                        "Public topic IDs or slugs (e.g. wallpapers, nature, travel)".to_string(),
-                    ),
-                    ty: ScalarType::Text,
-                    multiple: false,
-                    required: false,
-                    default: None,
-                },
+        provider_info(
+            "unsplash",
+            "Unsplash",
+            "0.1.0",
+            vec![
+                spec("api_key", "API Key", ScalarType::Secret)
+                    .desc("Unsplash Access Key / Client ID")
+                    .default_text(DEFAULT_CLIENT_ID)
+                    .build(),
+                spec("query", "Search Query", ScalarType::Text)
+                    .desc("Search terms or keywords (e.g. nature, wallpapers, architecture)")
+                    .build(),
+                spec("topics", "Topics", ScalarType::Text)
+                    .desc("Public topic IDs or slugs (e.g. wallpapers, nature, travel)")
+                    .build(),
             ],
-            default_config: vec![ConfigEntry {
-                key: "api_key".to_string(),
-                value: ConfigValue::One(ScalarValue::Text(DEFAULT_CLIENT_ID.to_string())),
-            }],
-            allowed_hosts: vec![
-                "api.unsplash.com".to_string(),
-                "images.unsplash.com".to_string(),
-                "*.unsplash.com".to_string(),
-            ],
-        }
+            &["api_key"],
+            &["api.unsplash.com", "images.unsplash.com", "*.unsplash.com"],
+        )
     }
 
     fn list(
@@ -219,7 +137,7 @@ impl Guest for UnsplashProvider {
             }
         }
 
-        let (body, _) = block_on(async move { http_get(api_url.as_str().to_string()).await })?;
+        let (body, _) = block_on(async move { fetch(api_url.as_str()).await })?;
 
         let parsed: RandomPhotosResponse = serde_json::from_slice(&body).map_err(|e| {
             ProviderError::Other(format!("Failed to parse Unsplash response: {}", e))
@@ -313,12 +231,12 @@ impl Guest for UnsplashProvider {
                         .query_pairs_mut()
                         .append_pair("client_id", client_id);
                     let ping_str = ping_url.to_string();
-                    let _ = block_on(async move { http_get(ping_str).await });
+                    let _ = block_on(async move { fetch(&ping_str).await });
                 }
             }
         }
 
-        let (data, ct) = block_on(async move { http_get(target_url).await })?;
+        let (data, ct) = block_on(async move { fetch(&target_url).await })?;
         Ok(Image {
             content_type: ct.unwrap_or_else(|| "image/jpeg".to_string()),
             data,
