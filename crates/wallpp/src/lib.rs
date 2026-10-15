@@ -12,7 +12,7 @@ pub mod state;
 pub mod wallpaper;
 
 wasmtime::component::bindgen!({
-    path: "../../wit",
+    path: "../wallpp-provider-sdk/wit",
     world: "wallpaper-provider",
     exports: { default: async },
 });
