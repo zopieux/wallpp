@@ -69,13 +69,13 @@ async fn fetch(url: &str) -> Result<(Vec<u8>, Option<String>), ProviderError> {
     .await
 }
 
-struct WindowsProvider;
+struct SpotlightProvider;
 
-impl Guest for WindowsProvider {
+impl Guest for SpotlightProvider {
     fn info() -> ProviderInfo {
         provider_info(
-            "windows",
-            "Windows Spotlight",
+            "spotlight",
+            "Spotlight",
             "0.1.0",
             vec![
                 spec("locale", "Locale", ScalarType::Text)
@@ -232,4 +232,4 @@ impl Guest for WindowsProvider {
     }
 }
 
-wallpp_provider_sdk::export!(WindowsProvider with_types_in wallpp_provider_sdk);
+wallpp_provider_sdk::export!(SpotlightProvider with_types_in wallpp_provider_sdk);

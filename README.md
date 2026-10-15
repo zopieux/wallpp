@@ -55,7 +55,7 @@ cargo run -p wallpp -- search-paths
 
 `wallpp` reads configuration from `$XDG_CONFIG_HOME/wallpp/config.toml` or the path pointed to by `$WALLPP_CONFIG`.
 
-If no configuration file exists, `wallpp` automatically treats all discovered providers (`Reddit`, `Windows Spotlight`, etc.) as available sources with their default options.
+If no configuration file exists, `wallpp` automatically treats all discovered providers (`Reddit`, `Spotlight`, etc.) as available sources with their default options.
 
 ### Example `config.toml`
 
