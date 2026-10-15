@@ -36,6 +36,9 @@ enum Commands {
         #[arg(short, long)]
         source: Option<String>,
     },
+    /// Print info for the currently set wallpaper (metadata, URL, path),
+    /// without fetching or changing anything.
+    Info,
     /// List provider search directories and their existence.
     SearchPaths,
     /// Open the GTK configuration editor (wallpp-gtk).
@@ -97,6 +100,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Preview { source }) => {
             engine.transition_next(source.as_deref(), true).await?;
+        }
+        Some(Commands::Info) => {
+            engine.show_current_info();
         }
         Some(Commands::SearchPaths) => {
             println!("Provider search paths:");

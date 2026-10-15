@@ -69,6 +69,19 @@ impl<'a> WallpaperEngine<'a> {
         println!("Cache path:  {}", meta.cache_path.display());
     }
 
+    /// Print info for the currently set wallpaper, in the same format
+    /// `preview`/`next` print for candidates. No fetching, no changes.
+    pub fn show_current_info(&self) {
+        match self.state.history.get(self.state.current_history_index) {
+            Some(meta) => {
+                self.display_wallpaper_info(meta, Some("=== Current Wallpaper ==="));
+            }
+            None => {
+                println!("No wallpaper has been set yet.");
+            }
+        }
+    }
+
     /// Single point of setting the desktop wallpaper, updating state/history, and performing post-maintenance.
     pub async fn set_and_record_wallpaper(
         &mut self,
