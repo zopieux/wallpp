@@ -137,6 +137,7 @@ impl Guest for WindowsProvider {
     fn info() -> ProviderInfo {
         ProviderInfo {
             name: "windows".to_string(),
+            label: "Windows Spotlight".to_string(),
             version: "0.1.0".to_string(),
             options: vec![
                 OptionSpec {

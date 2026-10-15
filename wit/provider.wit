@@ -62,6 +62,7 @@ interface types {
   // ---- Data records ----
   record provider-info {
     name: string,                  // e.g. "reddit"
+    label: string,                 // e.g. "Reddit"
     version: string,
     options: list<option-spec>,
     default-config: config,
