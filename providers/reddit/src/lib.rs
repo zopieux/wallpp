@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use url::Url;
 use wallpp_provider_sdk::*;
 use wstd::http::{Client, Request};
 use wstd::io::AsyncRead;
@@ -61,13 +62,13 @@ struct ImageSource {
 
 async fn http_get(
     url: String,
-    referer: Option<String>,
+    referer: Option<&str>,
 ) -> Result<(Vec<u8>, Option<String>), ProviderError> {
     let mut builder = Request::get(&url)
         .header("user-agent", USER_AGENT)
         .header("accept", "*/*");
 
-    if let Some(ref ref_url) = referer {
+    if let Some(ref_url) = referer {
         builder = builder.header("referer", ref_url);
     }
 
@@ -199,23 +200,32 @@ impl Guest for RedditProvider {
         let sort = reader.get_choice("sort").unwrap_or("hot");
         let time = reader.get_choice("time").unwrap_or("week");
 
-        let mut url = format!(
-            "https://reddtastic.com/api/reddit/subreddits/posts?v=3&subreddits={}&sort={}&limit=100",
-            subreddits, sort
-        );
+        let mut api_url = Url::parse("https://reddtastic.com/api/reddit/subreddits/posts")
+            .map_err(|e| ProviderError::Other(e.to_string()))?;
 
-        if sort == "top" {
-            url.push_str(&format!("&t={}", time));
-        }
+        {
+            let mut query = api_url.query_pairs_mut();
+            query.append_pair("v", "3");
+            query.append_pair("subreddits", &subreddits);
+            query.append_pair("sort", sort);
+            query.append_pair("limit", "100");
 
-        if let Some(ref after) = cursor {
-            url.push_str(&format!("&after={}", after));
+            if sort == "top" {
+                query.append_pair("t", time);
+            }
+
+            if let Some(ref after) = cursor {
+                query.append_pair("after", after);
+            }
         }
 
         let first_sub = subs.first().copied().unwrap_or("wallpapers");
-        let referer = Some(format!("https://reddtastic.com/r/{}", first_sub));
+        let referer = Url::parse("https://reddtastic.com/r/")
+            .ok()
+            .and_then(|base| base.join(first_sub).ok())
+            .map(|u| u.to_string());
 
-        let (bytes, _) = block_on(async move { http_get(url, referer).await })?;
+        let (bytes, _) = block_on(async move { http_get(api_url.as_str().to_string(), referer.as_deref()).await })?;
 
         let res: ReddtasticResponse = serde_json::from_slice(&bytes)
             .map_err(|e| ProviderError::Other(format!("Failed to parse JSON: {}", e)))?;
@@ -266,7 +276,12 @@ impl Guest for RedditProvider {
 
             let width = preview_img.width;
             let height = preview_img.height;
-            let source_url = post.permalink.map(|p| format!("https://reddit.com{}", p));
+            let source_url = post.permalink.and_then(|p| {
+                Url::parse("https://reddit.com")
+                    .ok()
+                    .and_then(|base| base.join(p.trim_start_matches('/')).ok())
+                    .map(|u| u.to_string())
+            });
 
             wallpapers.push(Wallpaper {
                 id: image_url,

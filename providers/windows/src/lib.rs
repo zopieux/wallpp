@@ -256,11 +256,7 @@ impl Guest for WindowsProvider {
             Some(Orientation::Portrait) => true,
             Some(Orientation::Landscape) => false,
             Some(Orientation::Square) => false,
-            Some(Orientation::Any) | None => match pref_orientation {
-                "portrait" => true,
-                "both" | "all" => true,
-                _ => false,
-            },
+            Some(Orientation::Any) | None => matches!(pref_orientation, "portrait" | "both" | "all"),
         };
 
         let request_url = if api_version == "v3" {
