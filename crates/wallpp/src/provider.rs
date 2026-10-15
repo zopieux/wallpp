@@ -13,13 +13,11 @@ use crate::wallpp::provider::types::{
 };
 use crate::WallpaperProvider;
 
-#[allow(dead_code)]
 pub struct HostState {
     pub wasi: WasiCtx,
     pub http: WasiHttpCtx,
     pub table: ResourceTable,
     pub limits: StoreLimits,
-    pub allowed_hosts: Vec<String>,
 }
 
 impl WasiView for HostState {
@@ -40,7 +38,6 @@ impl WasiHttpView for HostState {
     }
 }
 
-#[allow(dead_code)]
 pub struct DiscoveredProvider {
     pub name: String,
     pub path: PathBuf,
@@ -75,7 +72,7 @@ impl ProviderManager {
     pub fn search_dirs() -> Vec<PathBuf> {
         let mut dirs = Vec::new();
 
-        // 1. Explicit override via environment variable
+        // 1. Explicit override via environment variable.
         if let Ok(paths) = std::env::var("WALLPP_PROVIDERS_DIR") {
             for p in paths.split(':') {
                 if !p.is_empty() {
@@ -84,7 +81,7 @@ impl ProviderManager {
             }
         }
 
-        // 2. User XDG data directory (~/.local/share/wallpp/providers)
+        // 2. User XDG data directory (~/.local/share/wallpp/providers).
         let user_data = std::env::var("XDG_DATA_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -93,7 +90,7 @@ impl ProviderManager {
             });
         dirs.push(user_data.join("wallpp").join("providers"));
 
-        // 4. System XDG directories
+        // 4. System XDG directories.
         let system_data = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| {
             "/usr/local/share:/usr/share:/run/current-system/sw/share".to_string()
         });
@@ -135,12 +132,12 @@ impl ProviderManager {
                 http: WasiHttpCtx::new(),
                 table: ResourceTable::new(),
                 limits: StoreLimitsBuilder::new().memory_size(64 << 20).build(),
-                allowed_hosts: vec!["*".to_string()],
             },
         );
         store.limiter(|s| &mut s.limits);
 
-        let instance = WallpaperProvider::instantiate_async(&mut store, &component, &self.linker).await?;
+        let instance =
+            WallpaperProvider::instantiate_async(&mut store, &component, &self.linker).await?;
         let guest = instance.wallpp_provider_provider();
         let info = guest.call_info(&mut store).await?;
 
@@ -177,25 +174,30 @@ impl ProviderManager {
                 http: WasiHttpCtx::new(),
                 table: ResourceTable::new(),
                 limits: StoreLimitsBuilder::new().memory_size(128 << 20).build(),
-                allowed_hosts: discovered.info.allowed_hosts.clone(),
             },
         );
         store.limiter(|s| &mut s.limits);
 
-        let instance = WallpaperProvider::instantiate_async(&mut store, &component, &self.linker).await?;
+        let instance =
+            WallpaperProvider::instantiate_async(&mut store, &component, &self.linker).await?;
         let guest = instance.wallpp_provider_provider();
         let mut page = guest
-            .call_list(&mut store, &cfg, limit, cursor.as_deref(), filter.clone())
+            .call_list(&mut store, &cfg, limit, cursor.as_deref(), filter)
             .await?
             .map_err(|e| anyhow::anyhow!("Provider list error: {:?}", e))?;
 
-        // Centralized filtering across all providers
+        // Centralized filtering across all providers.
         page.items.retain(|w| matches_filter(w, &filter));
 
         Ok(page)
     }
 
-    pub async fn query_download(&self, provider_name: &str, cfg: WitConfig, id: &str) -> Result<Image> {
+    pub async fn query_download(
+        &self,
+        provider_name: &str,
+        cfg: WitConfig,
+        id: &str,
+    ) -> Result<Image> {
         let discovered = self
             .providers
             .get(provider_name)
@@ -209,12 +211,12 @@ impl ProviderManager {
                 http: WasiHttpCtx::new(),
                 table: ResourceTable::new(),
                 limits: StoreLimitsBuilder::new().memory_size(128 << 20).build(),
-                allowed_hosts: discovered.info.allowed_hosts.clone(),
             },
         );
         store.limiter(|s| &mut s.limits);
 
-        let instance = WallpaperProvider::instantiate_async(&mut store, &component, &self.linker).await?;
+        let instance =
+            WallpaperProvider::instantiate_async(&mut store, &component, &self.linker).await?;
         let guest = instance.wallpp_provider_provider();
         let image = guest
             .call_download(&mut store, &cfg, id)

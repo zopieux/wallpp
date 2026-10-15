@@ -10,8 +10,6 @@ const DEFAULT_CLIENT_ID: &str = "072e5048dfcb73a8d9ad59fcf402471518ff8df725df462
 
 #[derive(Deserialize)]
 struct UnsplashPhoto {
-    #[allow(dead_code)]
-    id: String,
     width: u32,
     height: u32,
     description: Option<String>,
@@ -63,14 +61,39 @@ async fn http_get(url: String) -> Result<(Vec<u8>, Option<String>), ProviderErro
         .map_err(|e| ProviderError::Network(e.to_string()))?;
 
     let status = resp.status();
-    if status.as_u16() == 429 {
+    let ratelimit_remaining = resp
+        .headers()
+        .get("x-ratelimit-remaining")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+
+    if status.as_u16() == 429 || (status.as_u16() == 403 && ratelimit_remaining == Some(0)) {
         return Err(ProviderError::RateLimited(None));
     }
-    if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Err(ProviderError::Auth(format!("HTTP {}", status)));
-    }
+
     if !status.is_success() {
-        return Err(ProviderError::Network(format!("HTTP {}", status)));
+        let mut err_body = Vec::new();
+        let _ = resp.body_mut().read_to_end(&mut err_body).await;
+        let err_msg = String::from_utf8_lossy(&err_body);
+        let trimmed_msg = err_msg.trim();
+
+        if trimmed_msg.to_lowercase().contains("rate limit") {
+            return Err(ProviderError::RateLimited(None));
+        }
+
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(ProviderError::Auth(if trimmed_msg.is_empty() {
+                format!("HTTP {}", status)
+            } else {
+                format!("HTTP {}: {}", status, trimmed_msg)
+            }));
+        }
+
+        return Err(ProviderError::Network(if trimmed_msg.is_empty() {
+            format!("HTTP {}", status)
+        } else {
+            format!("HTTP {}: {}", status, trimmed_msg)
+        }));
     }
 
     let content_type = resp
@@ -240,7 +263,7 @@ impl Guest for UnsplashProvider {
 
         let mut items = Vec::new();
         for photo in photos {
-            // Exclude watermarked/plus photos
+            // Exclude watermarked/plus photos.
             if photo.urls.full.contains("plus.unsplash.com/") {
                 continue;
             }
@@ -308,7 +331,7 @@ impl Guest for UnsplashProvider {
                 (id, None)
             };
 
-        // Report download to Unsplash per API terms
+        // Report download to Unsplash per API terms.
         if let Some(dl_url) = download_location {
             let reader = ConfigReader::new(&cfg);
             let client_id = reader

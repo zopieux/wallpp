@@ -66,7 +66,9 @@ impl<'a> ConfigReader<'a> {
                     return items
                         .iter()
                         .filter_map(|item| match item {
-                            ScalarValue::Text(ref s) | ScalarValue::Choice(ref s) => Some(s.as_str()),
+                            ScalarValue::Text(ref s) | ScalarValue::Choice(ref s) => {
+                                Some(s.as_str())
+                            }
                             _ => None,
                         })
                         .collect();

@@ -19,23 +19,27 @@ struct WallhavenItem {
     path: String,
     dimension_x: u32,
     dimension_y: u32,
-    #[allow(dead_code)]
-    purity: String,
-    #[allow(dead_code)]
-    category: String,
     source: Option<String>,
 }
 
 async fn http_get(
     url: String,
-    referer: Option<&str>,
+    referer: Option<String>,
+    api_key: Option<String>,
 ) -> Result<(Vec<u8>, Option<String>), ProviderError> {
     let mut builder = Request::get(&url)
         .header("user-agent", USER_AGENT)
         .header("accept", "*/*");
 
-    if let Some(r) = referer {
+    if let Some(ref r) = referer {
         builder = builder.header("referer", r);
+    }
+
+    if let Some(ref key) = api_key {
+        let trimmed = key.trim();
+        if !trimmed.is_empty() {
+            builder = builder.header("X-API-Key", trimmed);
+        }
     }
 
     let req = builder
@@ -51,11 +55,26 @@ async fn http_get(
     if status.as_u16() == 429 {
         return Err(ProviderError::RateLimited(None));
     }
-    if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Err(ProviderError::Auth(format!("HTTP {}", status)));
-    }
+
     if !status.is_success() {
-        return Err(ProviderError::Network(format!("HTTP {}", status)));
+        let mut err_body = Vec::new();
+        let _ = resp.body_mut().read_to_end(&mut err_body).await;
+        let err_msg = String::from_utf8_lossy(&err_body);
+        let trimmed_msg = err_msg.trim();
+
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(ProviderError::Auth(if trimmed_msg.is_empty() {
+                format!("HTTP {}", status)
+            } else {
+                format!("HTTP {}: {}", status, trimmed_msg)
+            }));
+        }
+
+        return Err(ProviderError::Network(if trimmed_msg.is_empty() {
+            format!("HTTP {}", status)
+        } else {
+            format!("HTTP {}: {}", status, trimmed_msg)
+        }));
     }
 
     let content_type = resp
@@ -86,12 +105,30 @@ impl Guest for WallhavenProvider {
                     key: "query".to_string(),
                     label: "Search Query".to_string(),
                     description: Some(
-                        "Search query or tag (e.g. nature, mountains, landscape)".to_string(),
+                        "Search query or tags (e.g. nature, mountains, +waterfall -water, -{digital art})"
+                            .to_string(),
                     ),
                     ty: ScalarType::Text,
                     multiple: false,
                     required: false,
                     default: None,
+                },
+                OptionSpec {
+                    key: "categories".to_string(),
+                    label: "Categories".to_string(),
+                    description: Some(
+                        "Categories to include: general, anime, people".to_string(),
+                    ),
+                    ty: ScalarType::Choice(vec![
+                        "general".to_string(),
+                        "anime".to_string(),
+                        "people".to_string(),
+                    ]),
+                    multiple: true,
+                    required: false,
+                    default: Some(ConfigValue::Many(vec![ScalarValue::Choice(
+                        "general".to_string(),
+                    )])),
                 },
                 OptionSpec {
                     key: "allow_sketchy".to_string(),
@@ -182,6 +219,10 @@ impl Guest for WallhavenProvider {
             ],
             default_config: vec![
                 ConfigEntry {
+                    key: "categories".to_string(),
+                    value: ConfigValue::Many(vec![ScalarValue::Choice("general".to_string())]),
+                },
+                ConfigEntry {
                     key: "allow_sketchy".to_string(),
                     value: ConfigValue::One(ScalarValue::Boolean(false)),
                 },
@@ -244,8 +285,15 @@ impl Guest for WallhavenProvider {
         {
             let mut query = api_url.query_pairs_mut();
 
-            // Categories: only General (100) — no Anime (0), no People (0)
-            query.append_pair("categories", "100");
+            let cats = reader.get_text_list("categories");
+            let g = if cats.contains(&"general") || cats.is_empty() {
+                '1'
+            } else {
+                '0'
+            };
+            let a = if cats.contains(&"anime") { '1' } else { '0' };
+            let p = if cats.contains(&"people") { '1' } else { '0' };
+            query.append_pair("categories", &format!("{}{}{}", g, a, p));
             query.append_pair("purity", &purity);
             query.append_pair("sorting", sorting);
 
@@ -264,11 +312,13 @@ impl Guest for WallhavenProvider {
                 }
             }
 
-            if let Some(api_key) = reader.get_text("api_key") {
-                let key_trimmed = api_key.trim();
-                if !key_trimmed.is_empty() {
-                    query.append_pair("apikey", key_trimmed);
-                }
+            let api_key = reader
+                .get_text("api_key")
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+
+            if let Some(key) = api_key {
+                query.append_pair("apikey", key);
             }
 
             if let (Some(w), Some(h)) = (filter.min_width, filter.min_height) {
@@ -276,7 +326,13 @@ impl Guest for WallhavenProvider {
             }
         }
 
-        let (body, _) = block_on(async move { http_get(api_url.as_str().to_string(), None).await })?;
+        let api_key = reader
+            .get_text("api_key")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let (body, _) =
+            block_on(async move { http_get(api_url.as_str().to_string(), None, api_key).await })?;
 
         let parsed: WallhavenSearchResponse = serde_json::from_slice(&body).map_err(|e| {
             ProviderError::Other(format!("Failed to parse Wallhaven response: {}", e))
@@ -315,9 +371,15 @@ impl Guest for WallhavenProvider {
         })
     }
 
-    fn download(_cfg: Config, id: String) -> Result<Image, ProviderError> {
+    fn download(cfg: Config, id: String) -> Result<Image, ProviderError> {
+        let reader = ConfigReader::new(&cfg);
+        let api_key = reader
+            .get_text("api_key")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         let (data, ct) = block_on(async move {
-            http_get(id, Some("https://wallhaven.cc/")).await
+            http_get(id, Some("https://wallhaven.cc/".to_string()), api_key).await
         })?;
         Ok(Image {
             content_type: ct.unwrap_or_else(|| "image/jpeg".to_string()),

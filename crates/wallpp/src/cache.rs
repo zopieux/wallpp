@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 pub struct CacheManager {
     cache_dir: PathBuf,
@@ -17,8 +17,7 @@ impl CacheManager {
                 PathBuf::from(home).join(".cache")
             });
         let cache_dir = base.join("wallpp");
-        fs::create_dir_all(&cache_dir.join("images"))?;
-        fs::create_dir_all(&cache_dir.join("metadata"))?;
+        fs::create_dir_all(cache_dir.join("images"))?;
         Ok(Self { cache_dir })
     }
 
@@ -41,32 +40,56 @@ impl CacheManager {
             "image/webp" => "webp",
             _ => "jpg",
         };
-        let path = self.cache_dir.join("images").join(format!("{}.{}", filename, ext));
-        fs::write(&path, data).with_context(|| format!("Failed to write cached image to {:?}", path))?;
+        let path = self
+            .cache_dir
+            .join("images")
+            .join(format!("{}.{}", filename, ext));
+        fs::write(&path, data)
+            .with_context(|| format!("Failed to write cached image to {:?}", path))?;
         Ok(path)
     }
 
-    #[allow(dead_code)]
-    pub fn get_cached_metadata(&self, source_key: &str) -> Option<String> {
-        let filename = hash_id(source_key);
-        let path = self.cache_dir.join("metadata").join(format!("{}.json", filename));
-        if let Ok(metadata) = fs::metadata(&path) {
-            if let Ok(modified) = metadata.modified() {
-                if let Ok(elapsed) = SystemTime::now().duration_since(modified) {
-                    if elapsed < Duration::from_secs(600) {
-                        return fs::read_to_string(&path).ok();
-                    }
+    pub fn enforce_max_size(&self, max_bytes: u64, keep_paths: &[PathBuf]) -> Result<()> {
+        let images_dir = self.cache_dir.join("images");
+        if !images_dir.exists() {
+            return Ok(());
+        }
+
+        let mut files = Vec::new();
+        let mut total_size = 0u64;
+
+        for entry in fs::read_dir(&images_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    let len = meta.len();
+                    total_size += len;
+                    let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    files.push((path, len, mtime));
                 }
             }
         }
-        None
-    }
 
-    #[allow(dead_code)]
-    pub fn store_metadata(&self, source_key: &str, json_content: &str) -> Result<()> {
-        let filename = hash_id(source_key);
-        let path = self.cache_dir.join("metadata").join(format!("{}.json", filename));
-        fs::write(&path, json_content)?;
+        if total_size <= max_bytes {
+            return Ok(());
+        }
+
+        // Sort by modification time ascending (oldest first).
+        files.sort_by_key(|(_, _, mtime)| *mtime);
+
+        for (path, len, _) in files {
+            if total_size <= max_bytes {
+                break;
+            }
+            if keep_paths.iter().any(|p| p == &path) {
+                continue;
+            }
+            if let Ok(()) = fs::remove_file(&path) {
+                total_size = total_size.saturating_sub(len);
+            }
+        }
+
         Ok(())
     }
 }

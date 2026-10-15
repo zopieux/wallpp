@@ -7,8 +7,176 @@ use crate::wallpp::provider::types::{
     Config as WitConfig, ConfigEntry, ConfigValue, ScalarType, ScalarValue,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RefreshStrategy {
+    #[default]
+    FromBoot,
+    FromLastChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceStrategy {
+    #[default]
+    Random,
+    #[serde(alias = "roundrobin")]
+    RoundRobin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ByteSize(pub u64);
+
+impl ByteSize {
+    pub fn as_bytes(&self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for ByteSize {
+    fn default() -> Self {
+        ByteSize(1024 * 1024 * 1024) // 1 GiB.
+    }
+}
+
+impl<'de> Deserialize<'de> for ByteSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ByteSizeVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ByteSizeVisitor {
+            type Value = ByteSize;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str(
+                    "a byte size integer or human-readable string like '1G', '500M', '2GiB'",
+                )
+            }
+
+            fn visit_i64<E>(self, v: i64) -> Result<ByteSize, E>
+            where
+                E: serde::de::Error,
+            {
+                if v < 0 {
+                    Err(E::custom("byte size cannot be negative"))
+                } else {
+                    Ok(ByteSize(v as u64))
+                }
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<ByteSize, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(ByteSize(v))
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<ByteSize, E>
+            where
+                E: serde::de::Error,
+            {
+                parse_byte_size(v).map(ByteSize).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_any(ByteSizeVisitor)
+    }
+}
+
+fn parse_byte_size(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty byte size".to_string());
+    }
+
+    let mut num_end = 0;
+    for (i, c) in s.char_indices() {
+        if c.is_ascii_digit() || c == '.' {
+            num_end = i + c.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    if num_end == 0 {
+        return Err(format!("invalid byte size '{}'", s));
+    }
+
+    let (num_str, unit_str) = s.split_at(num_end);
+    let val: f64 = num_str
+        .parse()
+        .map_err(|e| format!("invalid number in byte size '{}': {}", s, e))?;
+
+    let unit = unit_str.trim().to_uppercase();
+    let multiplier: u64 = match unit.as_str() {
+        "" | "B" => 1,
+        "K" | "KB" | "KIB" => 1024,
+        "M" | "MB" | "MIB" => 1024 * 1024,
+        "G" | "GB" | "GIB" => 1024 * 1024 * 1024,
+        "T" | "TB" | "TIB" => 1024 * 1024 * 1024 * 1024,
+        _ => return Err(format!("unknown unit '{}' in byte size", unit)),
+    };
+
+    Ok((val * multiplier as f64) as u64)
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_history_length() -> usize {
+    1000
+}
+
+fn default_prefetch_count() -> usize {
+    5
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagerConfig {
+    #[serde(default)]
+    pub cache_max_size: ByteSize,
+
+    #[serde(default = "default_history_length")]
+    pub history_length: usize,
+
+    #[serde(default = "default_prefetch_count")]
+    pub prefetch_count: usize,
+
+    #[serde(default)]
+    pub refresh_interval: Option<u64>,
+
+    #[serde(default = "default_true")]
+    pub refresh_at_boot: bool,
+
+    #[serde(default)]
+    pub refresh_strategy: RefreshStrategy,
+
+    #[serde(default, alias = "source_selection_strategy", alias = "selection_strategy")]
+    pub source_strategy: SourceStrategy,
+}
+
+impl Default for ManagerConfig {
+    fn default() -> Self {
+        Self {
+            cache_max_size: ByteSize::default(),
+            history_length: default_history_length(),
+            prefetch_count: default_prefetch_count(),
+            refresh_interval: None,
+            refresh_at_boot: true,
+            refresh_strategy: RefreshStrategy::default(),
+            source_strategy: SourceStrategy::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AppConfig {
+    #[serde(default)]
+    pub manager: ManagerConfig,
+
     #[serde(default)]
     pub source: Vec<SourceConfig>,
 }
@@ -37,14 +205,28 @@ impl AppConfig {
 
     pub fn load_or_default() -> Result<Self> {
         let path = Self::config_path();
+        let mut builder = config::Config::builder();
+
         if path.exists() {
-            let content = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read config file at {:?}", path))?;
-            let cfg: AppConfig = toml::from_str(&content)
-                .with_context(|| format!("Failed to parse TOML in {:?}", path))?;
-            Ok(cfg)
-        } else {
-            Ok(AppConfig::default())
+            builder = builder
+                .add_source(config::File::from(path.clone()).format(config::FileFormat::Toml));
+        }
+
+        builder = builder.add_source(
+            config::Environment::with_prefix("WALLPP")
+                .separator("__")
+                .ignore_empty(true),
+        );
+
+        match builder.build() {
+            Ok(c) => {
+                let app_config: AppConfig = c
+                    .try_deserialize()
+                    .with_context(|| format!("Failed to parse config from {:?}", path))?;
+                Ok(app_config)
+            }
+            Err(_) if !path.exists() => Ok(AppConfig::default()),
+            Err(e) => Err(anyhow::anyhow!("Failed to build configuration: {}", e)),
         }
     }
 }
@@ -112,7 +294,10 @@ fn parse_scalar(val: &toml::Value, ty: &ScalarType) -> Option<ScalarValue> {
             if allowed.contains(s) {
                 Some(ScalarValue::Choice(s.clone()))
             } else {
-                eprintln!("Warning: value '{}' not in allowed choices {:?}", s, allowed);
+                eprintln!(
+                    "Warning: value '{}' not in allowed choices {:?}",
+                    s, allowed
+                );
                 None
             }
         }
