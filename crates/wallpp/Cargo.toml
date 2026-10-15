@@ -1,0 +1,16 @@
+[package]
+name = "wallpp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+wasmtime = { version = "38", features = ["component-model"] }
+wasmtime-wasi = "38"
+wasmtime-wasi-http = "38"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+sha2 = "0.10"
+hex = "0.4"
