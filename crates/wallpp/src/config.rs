@@ -7,9 +7,9 @@ use crate::wallpp::provider::types::{
     Config as WitConfig, ConfigEntry, ConfigValue, ScalarType, ScalarValue,
 };
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AppConfig {
-    #[serde(default = "default_sources")]
+    #[serde(default)]
     pub source: Vec<SourceConfig>,
 }
 
@@ -19,21 +19,6 @@ pub struct SourceConfig {
     pub provider: String,
     #[serde(flatten)]
     pub options: HashMap<String, toml::Value>,
-}
-
-fn default_sources() -> Vec<SourceConfig> {
-    let mut options = HashMap::new();
-    options.insert(
-        "subreddits".to_string(),
-        toml::Value::Array(vec![toml::Value::String("wallpapers".to_string())]),
-    );
-    options.insert("sort".to_string(), toml::Value::String("hot".to_string()));
-
-    vec![SourceConfig {
-        name: Some("default-reddit".to_string()),
-        provider: "reddit".to_string(),
-        options,
-    }]
 }
 
 impl AppConfig {
@@ -59,9 +44,7 @@ impl AppConfig {
                 .with_context(|| format!("Failed to parse TOML in {:?}", path))?;
             Ok(cfg)
         } else {
-            Ok(AppConfig {
-                source: default_sources(),
-            })
+            Ok(AppConfig::default())
         }
     }
 }
@@ -69,27 +52,29 @@ impl AppConfig {
 pub fn toml_to_wit_config(
     source_options: &HashMap<String, toml::Value>,
     specs: &[crate::wallpp::provider::types::OptionSpec],
+    default_config: &[ConfigEntry],
 ) -> WitConfig {
-    let mut entries = Vec::new();
+    let mut config_map: HashMap<String, ConfigValue> = HashMap::new();
+    for entry in default_config {
+        config_map.insert(entry.key.clone(), entry.value.clone());
+    }
 
     for spec in specs {
-        let val_opt = source_options.get(&spec.key);
-
-        let config_value = match (val_opt, &spec.default) {
-            (Some(v), _) => parse_toml_value(v, spec),
-            (None, Some(def)) => Some(def.clone()),
-            (None, None) => None,
-        };
-
-        if let Some(cv) = config_value {
-            entries.push(ConfigEntry {
-                key: spec.key.clone(),
-                value: cv,
-            });
+        if let Some(v) = source_options.get(&spec.key) {
+            if let Some(cv) = parse_toml_value(v, spec) {
+                config_map.insert(spec.key.clone(), cv);
+            }
+        } else if !config_map.contains_key(&spec.key) {
+            if let Some(ref def) = spec.default {
+                config_map.insert(spec.key.clone(), def.clone());
+            }
         }
     }
 
-    entries
+    config_map
+        .into_iter()
+        .map(|(key, value)| ConfigEntry { key, value })
+        .collect()
 }
 
 fn parse_toml_value(

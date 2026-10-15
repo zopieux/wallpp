@@ -121,7 +121,9 @@ impl Guest for RedditProvider {
                     ty: ScalarType::Text,
                     multiple: true,
                     required: true,
-                    default: None,
+                    default: Some(ConfigValue::Many(vec![ScalarValue::Text(
+                        "wallpapers".to_string(),
+                    )])),
                 },
                 OptionSpec {
                     key: "sort".to_string(),
@@ -151,6 +153,20 @@ impl Guest for RedditProvider {
                     multiple: false,
                     required: false,
                     default: Some(ConfigValue::One(ScalarValue::Choice("week".to_string()))),
+                },
+            ],
+            default_config: vec![
+                ConfigEntry {
+                    key: "subreddits".to_string(),
+                    value: ConfigValue::Many(vec![ScalarValue::Text("wallpapers".to_string())]),
+                },
+                ConfigEntry {
+                    key: "sort".to_string(),
+                    value: ConfigValue::One(ScalarValue::Choice("hot".to_string())),
+                },
+                ConfigEntry {
+                    key: "time".to_string(),
+                    value: ConfigValue::One(ScalarValue::Choice("week".to_string())),
                 },
             ],
             allowed_hosts: vec![

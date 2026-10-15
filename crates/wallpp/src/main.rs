@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::collections::HashMap;
 
 mod cache;
 mod config;
 mod provider;
 
 use cache::CacheManager;
-use config::{AppConfig, SourceConfig};
+use config::AppConfig;
 use provider::ProviderManager;
 
 wasmtime::component::bindgen!({
@@ -79,33 +80,28 @@ async fn main() -> Result<()> {
         }
         Commands::List { source, limit } => {
             let app_cfg = AppConfig::load_or_default()?;
-            let sources = filter_sources(&app_cfg.source, source.as_deref());
+            let sources = get_active_sources(&app_cfg, source.as_deref(), &provider_mgr.providers);
 
             if sources.is_empty() {
-                eprintln!("No matching sources found in configuration.");
+                eprintln!("No matching sources found.");
                 return Ok(());
             }
 
             for src in sources {
-                let name = src.name.as_deref().unwrap_or(&src.provider);
-                println!("=== Source: {} (provider: {}) ===", name, src.provider);
+                println!("=== Source: {} (provider: {}) ===", src.name, src.provider.name);
 
-                let discovered = match provider_mgr.providers.get(&src.provider) {
-                    Some(p) => p,
-                    None => {
-                        eprintln!("  Provider '{}' is not installed or discovered.", src.provider);
-                        continue;
-                    }
-                };
-
-                let wit_cfg = config::toml_to_wit_config(&src.options, &discovered.info.options);
+                let wit_cfg = config::toml_to_wit_config(
+                    src.options,
+                    &src.provider.info.options,
+                    &src.provider.info.default_config,
+                );
                 let filter = wallpp::provider::types::FilterCriteria {
                     min_width: None,
                     min_height: None,
                     orientation: None,
                 };
 
-                match provider_mgr.query_list(&src.provider, wit_cfg, limit, None, filter).await {
+                match provider_mgr.query_list(&src.provider.name, wit_cfg, limit, None, filter).await {
                     Ok(page) => {
                         println!("Found {} wallpapers:", page.items.len());
                         for (i, w) in page.items.iter().enumerate() {
@@ -130,22 +126,20 @@ async fn main() -> Result<()> {
         }
         Commands::Next { source } => {
             let app_cfg = AppConfig::load_or_default()?;
-            let sources = filter_sources(&app_cfg.source, source.as_deref());
+            let sources = get_active_sources(&app_cfg, source.as_deref(), &provider_mgr.providers);
 
             if sources.is_empty() {
-                anyhow::bail!("No matching sources found in configuration.");
+                anyhow::bail!("No matching sources found.");
             }
 
             // Pick first source (or round-robin / random)
             let src = &sources[0];
-            let src_name = src.name.as_deref().unwrap_or(&src.provider);
 
-            let discovered = provider_mgr
-                .providers
-                .get(&src.provider)
-                .with_context(|| format!("Provider '{}' not found", src.provider))?;
-
-            let wit_cfg = config::toml_to_wit_config(&src.options, &discovered.info.options);
+            let wit_cfg = config::toml_to_wit_config(
+                src.options,
+                &src.provider.info.options,
+                &src.provider.info.default_config,
+            );
             let filter = wallpp::provider::types::FilterCriteria {
                 min_width: None,
                 min_height: None,
@@ -154,11 +148,11 @@ async fn main() -> Result<()> {
 
             // Query wallpapers
             let page = provider_mgr
-                .query_list(&src.provider, wit_cfg.clone(), 30, None, filter)
+                .query_list(&src.provider.name, wit_cfg.clone(), 30, None, filter)
                 .await?;
 
             if page.items.is_empty() {
-                anyhow::bail!("Source '{}' returned 0 wallpapers", src_name);
+                anyhow::bail!("Source '{}' returned 0 wallpapers", src.name);
             }
 
             let selected = &page.items[0];
@@ -172,7 +166,7 @@ async fn main() -> Result<()> {
                 }
                 None => {
                     println!("[Downloading] Fetching image from provider...");
-                    let img = provider_mgr.query_download(&src.provider, wit_cfg, id).await?;
+                    let img = provider_mgr.query_download(&src.provider.name, wit_cfg, id).await?;
                     let p = cache_mgr.store_image(id, &img.content_type, &img.data)?;
                     println!("[Downloaded] Stored {} bytes at {:?}", img.data.len(), p);
                     p
@@ -200,12 +194,72 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn filter_sources<'a>(sources: &'a [SourceConfig], filter: Option<&str>) -> Vec<&'a SourceConfig> {
-    match filter {
-        Some(name) => sources
-            .iter()
-            .filter(|s| s.name.as_deref() == Some(name) || s.provider == name)
-            .collect(),
-        None => sources.iter().collect(),
-    }
+struct SourceWithInfo<'a> {
+    name: String,
+    provider: &'a provider::DiscoveredProvider,
+    options: &'a HashMap<String, toml::Value>,
 }
+
+fn get_active_sources<'a>(
+    app_cfg: &'a AppConfig,
+    source_filter: Option<&str>,
+    discovered: &'a HashMap<String, provider::DiscoveredProvider>,
+) -> Vec<SourceWithInfo<'a>> {
+    static EMPTY_MAP: std::sync::LazyLock<HashMap<String, toml::Value>> =
+        std::sync::LazyLock::new(HashMap::new);
+
+    if let Some(filter_name) = source_filter {
+        for src in &app_cfg.source {
+            if src.name.as_deref() == Some(filter_name) || src.provider == filter_name {
+                if let Some(prov) = discovered.get(&src.provider) {
+                    return vec![SourceWithInfo {
+                        name: src.name.clone().unwrap_or_else(|| src.provider.clone()),
+                        provider: prov,
+                        options: &src.options,
+                    }];
+                }
+            }
+        }
+        if let Some(prov) = discovered.get(filter_name) {
+            return vec![SourceWithInfo {
+                name: filter_name.to_string(),
+                provider: prov,
+                options: &EMPTY_MAP,
+            }];
+        }
+        return Vec::new();
+    }
+
+    if !app_cfg.source.is_empty() {
+        let mut list = Vec::new();
+        for src in &app_cfg.source {
+            if let Some(prov) = discovered.get(&src.provider) {
+                list.push(SourceWithInfo {
+                    name: src.name.clone().unwrap_or_else(|| src.provider.clone()),
+                    provider: prov,
+                    options: &src.options,
+                });
+            } else {
+                eprintln!(
+                    "Warning: Configured provider '{}' not found in search paths.",
+                    src.provider
+                );
+            }
+        }
+        return list;
+    }
+
+    let mut list = Vec::new();
+    let mut names: Vec<_> = discovered.keys().collect();
+    names.sort();
+    for name in names {
+        let prov = &discovered[name];
+        list.push(SourceWithInfo {
+            name: name.clone(),
+            provider: prov,
+            options: &EMPTY_MAP,
+        });
+    }
+    list
+}
+
