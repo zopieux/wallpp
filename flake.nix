@@ -19,9 +19,12 @@
       forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
       lib = nixpkgs.lib;
 
+      rustVersion = "1.99.0";
+
       # Rust toolchain (with the wasm32-wasip2 target that providers
       # compile to) and rustPlatform for one system. Shared by the
       # builtin packages and by buildProvider below.
+      # wasm32-wasip2 is Tier 2 since Rust 1.82, so stable suffices.
       mkToolchain =
         system:
         let
@@ -29,7 +32,7 @@
             inherit system;
             overlays = [ (import rust-overlay) ];
           };
-          rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
             targets = [ "wasm32-wasip2" ];
             extensions = [ "rust-src" ];
           };
@@ -83,12 +86,13 @@
             lockFile = cargoLock;
             inherit outputHashes;
           };
+          CARGO_BUILD_TARGET = "wasm32-wasip2";
           buildPhase = ''
             runHook preBuild
             cargo build -j $NIX_BUILD_CORES --profile release --target wasm32-wasip2 --offline -p ${crateName}
             runHook postBuild
           '';
-          checkPhase = ":";
+          doCheck = false;
           installPhase = ''
             mkdir -p $out/share/wallpp/providers
             cp target/wasm32-wasip2/release/${wasmArtifact} $out/share/wallpp/providers/${name}.wasm
@@ -108,17 +112,45 @@
             "unsplash"
             "wallhaven"
           ];
-          providerPkgs = lib.genAttrs providerNames (
-            name:
-            buildProvider {
-              inherit system name;
-              src = ./.;
-              cargoLock = ./Cargo.lock;
-            }
+
+          # Build all internal providers in a single derivation for speed.
+          providers = rustPlatform.buildRustPackage {
+            pname = "wallpp-providers";
+            version = "0.1.0";
+            src = ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            CARGO_BUILD_TARGET = "wasm32-wasip2";
+            buildPhase = ''
+              runHook preBuild
+              cargo build -j $NIX_BUILD_CORES --profile release --target wasm32-wasip2 --offline \
+                ${lib.concatMapStringsSep " " (name: "-p wallpp-provider-${name}") providerNames}
+              runHook postBuild
+            '';
+            doCheck = false;
+            installPhase = ''
+              mkdir -p $out/share/wallpp/providers
+              ${lib.concatMapStringsSep "\n" (
+                name:
+                let
+                  crateName = "wallpp-provider-${name}";
+                  wasmArtifact = "${lib.replaceStrings [ "-" ] [ "_" ] crateName}.wasm";
+                in
+                "cp target/wasm32-wasip2/release/${wasmArtifact} $out/share/wallpp/providers/${name}.wasm"
+              ) providerNames}
+            '';
+          };
+
+          # Individual provider packages extracted from the combined build.
+          providerNamedPackages = lib.genAttrs (map (name: "wallpp-provider-${name}") providerNames) (
+            pkgName:
+            let
+              name = lib.removePrefix "wallpp-provider-" pkgName;
+            in
+            pkgs.runCommand "${pkgName}-0.1.0" { } ''
+              mkdir -p $out/share/wallpp/providers
+              cp ${providers}/share/wallpp/providers/${name}.wasm $out/share/wallpp/providers/
+            ''
           );
-          providerNamedPackages = lib.mapAttrs' (
-            name: pkg: lib.nameValuePair "wallpp-provider-${name}" pkg
-          ) providerPkgs;
 
           wallpp-bin = rustPlatform.buildRustPackage {
             pname = "wallpp-bin";
@@ -128,23 +160,39 @@
             cargoBuildFlags = [
               "-p"
               "wallpp"
+              "-p"
+              "wallpp-gtk"
             ];
-            nativeBuildInputs = [ pkgs.pkg-config ];
+            cargoTestFlags = [
+              "-p"
+              "wallpp"
+              "-p"
+              "wallpp-gtk"
+            ];
+            nativeBuildInputs = [
+              pkgs.pkg-config
+              pkgs.wrapGAppsHook4
+            ];
             buildInputs = with pkgs; [
+              gtk4
               libxcb
               libxrandr
               wayland
+              gsettings-desktop-schemas
             ];
           };
 
           wallpp = pkgs.symlinkJoin {
             name = "wallpp-0.1.0";
-            paths = [ wallpp-bin ] ++ (builtins.attrValues providerPkgs);
+            paths = [
+              wallpp-bin
+              providers
+            ];
             nativeBuildInputs = [ pkgs.makeWrapper ];
             postBuild = ''
               wrapProgram $out/bin/wallpp \
                 --prefix XDG_DATA_DIRS : "$out/share" \
-                --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.procps ]}" \
+                --prefix PATH : "$out/bin:${pkgs.lib.makeBinPath [ pkgs.procps ]}" \
                 --prefix LD_LIBRARY_PATH : "${
                   pkgs.lib.makeLibraryPath (
                     with pkgs;
@@ -155,12 +203,25 @@
                     ]
                   )
                 }"
+              wrapProgram $out/bin/wallpp-gtk \
+                --prefix XDG_DATA_DIRS : "$out/share"
             '';
             meta.mainProgram = "wallpp";
           };
+
+          wallpp-gtk = pkgs.symlinkJoin {
+            name = "wallpp-gtk-0.1.0";
+            paths = [ wallpp ];
+            meta.mainProgram = "wallpp-gtk";
+          };
         in
         {
-          inherit wallpp-bin wallpp;
+          inherit
+            wallpp-bin
+            wallpp
+            wallpp-gtk
+            providers
+            ;
           default = wallpp;
         }
         // providerNamedPackages
@@ -173,7 +234,7 @@
             inherit system;
             overlays = [ (import rust-overlay) ];
           };
-          rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
             targets = [ "wasm32-wasip2" ];
             extensions = [
               "rust-src"
