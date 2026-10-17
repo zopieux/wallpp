@@ -27,6 +27,7 @@ struct ReddtasticChild {
 struct PostData {
     title: String,
     author: Option<String>,
+    subreddit: Option<String>,
     permalink: Option<String>,
     url: Option<String>,
     preview: Option<Preview>,
@@ -228,9 +229,17 @@ impl Guest for RedditProvider {
                     .map(|u| u.to_string())
             });
 
+            let title = match post.subreddit {
+                Some(ref sub) if !sub.is_empty() => {
+                    let sub = sub.strip_prefix("r/").unwrap_or(sub);
+                    Some(format!("r/{} - {}", sub, post.title))
+                }
+                _ => Some(post.title),
+            };
+
             wallpapers.push(Wallpaper {
                 id: image_url,
-                title: Some(post.title),
+                title,
                 author: post.author,
                 source_url,
                 width: Some(width),
